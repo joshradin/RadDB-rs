@@ -2,12 +2,13 @@
 //! all relevant traits as well.
 
 use chrono::{Date, Utc, Local, DateTime};
+use std::fmt::{Display, Formatter};
+
 pub mod serialization;
+pub mod deserialization;
 
-#[macro_use]
-extern crate rad_db_derive;
 
-#[type_tree]
+
 #[derive(Debug, Clone, Copy)]
 pub enum Numeric {
     Float(f32),
@@ -35,7 +36,7 @@ pub enum Unsigned {
 #[derive(Debug, Clone)]
 pub enum Text {
     Char(char),
-    String(String, u16),
+    String(String, Option<u16>),
     Binary(u8),
     BinaryString(Vec<u8>, u16),
     Blob(Vec<u8>)
@@ -43,12 +44,9 @@ pub enum Text {
 
 #[derive(Debug, Clone, Copy)]
 pub enum Time {
-    /*
     Date(Date<Local>),
     DateTime(DateTime<Local>),
     Timestamp(DateTime<Utc>),
-
-     */
     Year(i32)
 }
 
@@ -144,12 +142,108 @@ impl From<bool> for Type {
     }
 }
 
+impl From<&str> for Type {
+    fn from(s: &str) -> Self {
+        let string = s.to_string();
+        Type::Text(Text::String(string, None))
+    }
+}
+
+impl From<String> for Type {
+    fn from(s: String) -> Self {
+        Type::Text(Text::String(s, None))
+    }
+}
+
+impl Display for Unsigned {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let disp: &dyn Display = match self {
+            Unsigned::Byte(b) => { b }
+            Unsigned::Short(s) => { s }
+            Unsigned::Int(i) => { i }
+            Unsigned::Long(d) => { d }
+        };
+        write!(f, "{}", disp)
+    }
+}
+
+impl Display for Signed {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let disp: &dyn Display = match self {
+            Signed::Byte(b) => { b }
+            Signed::Short(s) => { s }
+            Signed::Int(i) => { i }
+            Signed::Long(d) => { d }
+        };
+        write!(f, "{}", disp)
+    }
+}
+
+impl Display for Numeric {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let disp: &dyn Display = match self {
+            Numeric::Float(f) => {f}
+            Numeric::Double(d) => {d}
+            Numeric::Signed(s) => {s}
+            Numeric::Unsigned(u) => {u}
+        };
+        write!(f, "{}", disp)
+    }
+}
+
+impl Display for Text {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let disp: &dyn Display = match self {
+            Text::Char(c) => {c}
+            Text::String(s, _) => {s}
+            Text::Binary(b) => {b}
+            Text::BinaryString(b, _) => {
+                unsafe {
+                    return write!(f, "{}", String::from_utf8_unchecked(b.clone()))
+                }
+            }
+            Text::Blob(blob) => {
+                unsafe {
+                    return write!(f, "{}", String::from_utf8_unchecked(blob.clone()))
+                }
+            }
+        };
+        write!(f, "\"{}\"", disp)
+    }
+}
+
+impl Display for Time {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let disp: &dyn Display = match self {
+            Time::Date(d) => {d}
+            Time::DateTime(datetime) => {datetime}
+            Time::Timestamp(t) => {t}
+            Time::Year(yr) => {yr}
+        };
+        write!(f, "{}", disp)
+    }
+}
+
+impl Display for Type {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let disp: &dyn Display = match self {
+            Type::Numeric(n) => {n}
+            Type::Text(t) => {t}
+            Type::Time(t) => {t}
+            Type::Boolean(b) => {b}
+        };
+        write!(f, "{}", disp)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn conversion() {
-        let ty: Type = 0i32.into();
+        let types: Vec<Type> = vec![3.into(), 9.into(), "hello".into()];
+        let text = types.into_iter().map(|s| s.to_string()).collect::<Vec<String>>().join(",");
+        assert_eq!("3,9,\"hello\"", text);
     }
 }

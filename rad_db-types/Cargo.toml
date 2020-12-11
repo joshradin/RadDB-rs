@@ -9,3 +9,4 @@ edition = "2018"
 [dependencies]
 chrono = "0.4"
 rad_db-derive = { path="../rad_db-derive"}
+regex = "1.4.2"
