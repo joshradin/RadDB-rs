@@ -9,7 +9,7 @@ pub mod deserialization;
 
 
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialOrd, PartialEq)]
 pub enum Numeric {
     Float(f32),
     Double(f64),
@@ -17,7 +17,7 @@ pub enum Numeric {
     Unsigned(Unsigned)
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Signed {
     Byte(i8),
     Short(i16),
@@ -25,7 +25,7 @@ pub enum Signed {
     Long(i64)
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Unsigned {
     Byte(u8),
     Short(u16),
@@ -33,7 +33,7 @@ pub enum Unsigned {
     Long(u64)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Text {
     Char(char),
     String(String, Option<u16>),
@@ -42,7 +42,7 @@ pub enum Text {
     Blob(Vec<u8>)
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Time {
     Date(Date<Local>),
     DateTime(DateTime<Local>),
@@ -52,7 +52,7 @@ pub enum Time {
 
 
 /// Base type for all data types
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     Numeric(Numeric),
     Text(Text),
@@ -239,11 +239,29 @@ impl Display for Type {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
+    use crate::serialization::serialize_values;
 
     #[test]
     fn conversion() {
         let types: Vec<Type> = vec![3.into(), 9.into(), "hello".into()];
         let text = types.into_iter().map(|s| s.to_string()).collect::<Vec<String>>().join(",");
         assert_eq!("3,9,\"hello\"", text);
+    }
+
+    #[test]
+    fn date() {
+        let date = Time::Date(Local.ymd(1999,3,7));
+        println!("{}", date);
+    }
+
+    #[test]
+    fn serialize_deserialize() {
+        let types: Vec<Type> = vec![Signed::Byte(3).into(), Unsigned::Long(23241212332).into(), Text::String("Hello World!".to_string(), None).into()];
+        let to_check = types.clone();
+        let serialized = serialize_values(types);
+        let types: Vec<Type> = vec![Signed::Byte(0).into(), Unsigned::Long(0).into(), Text::String(String::new(), None).into()];
+        let deserialized = deserialization::parse_using_types(serialized, types).unwrap();
+        assert_eq!(deserialized, to_check);
     }
 }
