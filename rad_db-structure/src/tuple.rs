@@ -1,5 +1,6 @@
-use rad_db_types::Type;
 use std::ops::{Deref, DerefMut};
+
+use rad_db_types::Type;
 
 /// Represents a single row within a database.
 /// A tuple knows no information about itself besides its contents

@@ -6,7 +6,8 @@ use std::hash::{Hash, Hasher};
 use crate::key::primary::{PrimaryKey, PrimaryKeyDefinition};
 use crate::tuple::Tuple;
 
-pub mod hash_map;
+mod block;
+
 
 /// When a tuple couldn't be inserted for some reason
 #[derive(Debug)]
@@ -32,17 +33,34 @@ impl Error for TupleInsertionError {}
 
 pub type InsertionResult<T> = Result<T, TupleInsertionError>;
 
-pub trait TupleStorage {
-    fn new(primary_key_definition: PrimaryKeyDefinition) -> Self
-    where
-        Self: Sized;
+pub struct TupleStorage {
+    primary_key_definition: PrimaryKeyDefinition,
+    len: usize,
+}
+
+
+impl TupleStorage {
+    pub fn new(primary_key_definition: PrimaryKeyDefinition) -> Self {
+        Self {
+            primary_key_definition,
+            len: 0
+        }
+    }
 
     /// Insert an entire tuple into the storage medium
-    fn insert(&mut self, tuple: Tuple) -> InsertionResult<()>;
-    fn remove(&mut self, primary_key: PrimaryKey<'_>) -> Result<Tuple, ()>;
+    fn insert(&mut self, tuple: Tuple) -> InsertionResult<()> {
+        unimplemented!()
+    }
+    fn remove(&mut self, primary_key: PrimaryKey<'_>) -> Result<Tuple, ()> {
+        unimplemented!()
+    }
 
-    fn find_by_primary(&self, primary_key: PrimaryKey<'_>) -> Result<&Tuple, ()>;
-    fn all_tuples(&self) -> Vec<&Tuple>;
+    fn find_by_primary(&self, primary_key: PrimaryKey<'_>) -> Result<&Tuple, ()> {
+        unimplemented!()
+    }
+    fn all_tuples(&self) -> Vec<&Tuple> {
+        unimplemented!()
+    }
 
     fn hash_tuple(&self, tuple: &Tuple) -> u64 {
         let primary_key = self.get_primary_key_of_tuple(tuple);
@@ -64,14 +82,11 @@ pub trait TupleStorage {
         PrimaryKey::new(ret)
     }
 
-    fn len(&self) -> usize;
+    fn len(&self) -> usize {
+
+    }
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
 }
 
-impl Debug for dyn TupleStorage {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "TupleStorage[len={}]", self.len())
-    }
-}
