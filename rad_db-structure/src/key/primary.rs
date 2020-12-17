@@ -1,7 +1,8 @@
-use rad_db_types::{SameType, Type};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
+
+use rad_db_types::{SameType, Type};
 
 #[derive(Debug, Clone)]
 pub struct PrimaryKeyDefinition(Vec<usize>);

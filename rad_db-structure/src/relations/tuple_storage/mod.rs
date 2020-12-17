@@ -5,9 +5,9 @@ use std::hash::{Hash, Hasher};
 
 use crate::key::primary::{PrimaryKey, PrimaryKeyDefinition};
 use crate::tuple::Tuple;
+use std::collections::HashMap;
 
 mod block;
-
 
 /// When a tuple couldn't be inserted for some reason
 #[derive(Debug)]
@@ -38,12 +38,11 @@ pub struct TupleStorage {
     len: usize,
 }
 
-
 impl TupleStorage {
     pub fn new(primary_key_definition: PrimaryKeyDefinition) -> Self {
         Self {
             primary_key_definition,
-            len: 0
+            len: 0,
         }
     }
 
@@ -69,7 +68,9 @@ impl TupleStorage {
         hasher.finish()
     }
 
-    fn get_primary_key_definition(&self) -> &PrimaryKeyDefinition;
+    fn get_primary_key_definition(&self) -> &PrimaryKeyDefinition {
+        &self.primary_key_definition
+    }
 
     fn get_primary_key_of_tuple<'a>(&self, tuple: &'a Tuple) -> PrimaryKey<'a> {
         let definition = self.get_primary_key_definition();
@@ -83,10 +84,9 @@ impl TupleStorage {
     }
 
     fn len(&self) -> usize {
-
+        unimplemented!()
     }
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
 }
-

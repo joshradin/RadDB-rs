@@ -8,3 +8,4 @@ edition = "2018"
 
 [dependencies]
 rad_db-types = { path = "../rad_db-types"}
+memmap = "0.7.0"

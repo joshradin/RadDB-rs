@@ -71,6 +71,7 @@ pub enum Type {
     Text(Text),
     Time(Time),
     Boolean(bool),
+    Optional(Option<Box<Type>>),
 }
 
 impl From<Numeric> for Type {
@@ -238,6 +239,8 @@ impl Display for Type {
             Type::Text(t) => t,
             Type::Time(t) => t,
             Type::Boolean(b) => b,
+            Type::Optional(Some(inner)) => inner,
+            Type::Optional(None) => &"NULL",
         };
         write!(f, "{}", disp)
     }
