@@ -27,6 +27,7 @@ use rad_db_types::Type;
 use crate::identifier::Identifier;
 use crate::relations::RelationDefinition;
 use crate::tuple::Tuple;
+use std::slice::{Iter, IterMut};
 
 pub const NUM_TUPLES_PER_BLOCK: usize = 512;
 
@@ -276,6 +277,14 @@ pub struct BlockContents {
     internal: Vec<Option<Tuple>>,
 }
 
+fn filter_map_helper<T>(input: &Option<T>) -> Option<&T> {
+    input.as_ref()
+}
+fn filter_map_helper_mut<T>(input: &mut Option<T>) -> Option<&mut T> {
+    input.as_mut()
+}
+
+
 impl BlockContents {
     pub fn get_tuple(&self, index: usize) -> Option<&Tuple> {
         self.internal[index].as_ref()
@@ -293,11 +302,11 @@ impl BlockContents {
         std::mem::replace(&mut self.internal[index], None)
     }
 
-    pub fn all(&self) -> impl Iterator<Item = &Tuple> {
-        self.internal.iter().filter_map(|item| item.as_ref())
+    pub fn all(&self) -> FilterMap<Iter<Option<Tuple>>, fn(&Option<Tuple>) -> Option<&Tuple>> {
+        self.internal.iter().filter_map(<Option<Tuple>>::as_ref)
     }
 
-    pub fn all_mut(&mut self) -> impl Iterator<Item = &mut Tuple> {
+    pub fn all_mut(&mut self) -> FilterMap<IterMut<Option<Tuple>>, fn(&mut Option<Tuple>) -> Option<&mut Tuple>> {
         self.internal.iter_mut().filter_map(|item| item.as_mut())
     }
 }
@@ -328,18 +337,18 @@ impl IndexMut<usize> for BlockContents {
 
 impl<'a> IntoIterator for &'a BlockContents {
     type Item = &'a Tuple;
-    type IntoIter = <Vec<&'a Tuple> as IntoIterator>::IntoIter;
+    type IntoIter = FilterMap<Iter<'a, Option<Tuple>>, fn(&Option<Tuple>) -> Option<&Tuple>>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.all().collect::<Vec<&'a Tuple>>().into_iter()
+        self.all()
     }
 }
 
 impl<'a> IntoIterator for &'a mut BlockContents {
     type Item = &'a mut Tuple;
-    type IntoIter = <Vec<&'a mut Tuple> as IntoIterator>::IntoIter;
+    type IntoIter = FilterMap<IterMut<'a, Option<Tuple>>, fn(&mut Option<Tuple>) -> Option<&mut Tuple>>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.all_mut().collect::<Vec<&'a mut Tuple>>().into_iter()
+        self.all_mut()
     }
 }
