@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::fmt::{Display, Formatter};
 use std::iter::FromIterator;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Identifier {
@@ -166,6 +167,16 @@ impl<S: AsRef<str>> From<S> for Identifier {
 impl From<&Identifier> for Identifier {
     fn from(i: &Identifier) -> Self {
         i.clone()
+    }
+}
+
+impl From<&Identifier> for PathBuf {
+    fn from(i: &Identifier) -> Self {
+        let mut ret = PathBuf::new();
+        for str in i {
+            ret.push(str);
+        }
+        ret
     }
 }
 

@@ -3,12 +3,12 @@ use rad_db_structure::tuple::Tuple;
 use std::collections::VecDeque;
 
 #[derive(Debug)]
-pub struct QueryBuffer<'a> {
+pub struct QueryBuffer {
     max_storage: Option<usize>,
-    storage: VecDeque<&'a Tuple>,
+    storage: VecDeque<Tuple>,
 }
 
-impl<'a> QueryBuffer<'a> {
+impl QueryBuffer {
     /// Creates a new buffer, with an optional max storage.
     ///
     /// # Warning
@@ -27,7 +27,7 @@ impl<'a> QueryBuffer<'a> {
     ///
     /// # Panic
     /// Will panic if the buffer is full
-    pub fn push(&mut self, tuple: &'a Tuple) {
+    pub fn push(&mut self, tuple: Tuple) {
         match self.try_push(tuple) {
             Ok(_) => {}
             Err(_) => {
@@ -37,7 +37,7 @@ impl<'a> QueryBuffer<'a> {
     }
 
     /// Attempts to push a tuple onto the buffer, returning OK(()) if successful
-    pub fn try_push(&mut self, tuple: &'a Tuple) -> Result<(), ()> {
+    pub fn try_push(&mut self, tuple: Tuple) -> Result<(), ()> {
         let max_storage = match self.max_storage {
             None => usize::MAX / std::mem::size_of::<usize>(),
             Some(max) => max,
@@ -57,8 +57,8 @@ impl<'a> QueryBuffer<'a> {
     }
 }
 
-impl<'a> Iterator for &mut QueryBuffer<'a> {
-    type Item = &'a Tuple;
+impl Iterator for &mut QueryBuffer {
+    type Item = Tuple;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.storage.pop_front()

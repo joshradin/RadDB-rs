@@ -34,8 +34,19 @@ pub struct Block {
     relationship_definition: RelationDefinition,
     block_num: usize,
     block_contents: Option<BlockContents>,
+    len: usize,
     usage: RwLock<()>,
     reads: AtomicUsize,
+}
+
+impl Block {
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn len_mut(&mut self) -> &mut usize {
+        &mut self.len
+    }
 }
 
 #[derive(Debug)]
@@ -83,6 +94,7 @@ impl Block {
             relationship_definition,
             block_num,
             block_contents: None,
+            len: 0,
             usage: RwLock::new(()),
             reads: Default::default(),
         };
@@ -92,9 +104,11 @@ impl Block {
 
     fn initialize_file(&self) -> std::io::Result<()> {
         let file_name = self.file_name();
+
         if file_name.exists() {
             return Ok(());
         }
+        std::fs::create_dir_all(&file_name.parent().unwrap())?;
 
         &OpenOptions::new()
             .write(true)
@@ -148,7 +162,7 @@ impl Block {
     }
 
     fn file_name(&self) -> PathBuf {
-        let mut ret = PathBuf::new();
+        let mut ret = PathBuf::from("DB_STORAGE");
         for name in &self.parent_table {
             ret.push(name);
         }
@@ -158,15 +172,15 @@ impl Block {
 
     unsafe fn load(&self) {
         let path = self.file_name();
-        std::fs::create_dir_all(&path);
         let file = OpenOptions::new()
             .write(true)
             .read(true)
             .open(&path)
-            .expect("Could not open file");
+            .expect(&*format!("Could not open file {:?}", path));
 
         let mut buf_reader = BufReader::new(&file);
         let mut tuples = vec![];
+        let mut len = 0;
         loop {
             let mut str = String::new();
             match buf_reader.read_line(&mut str) {
@@ -175,6 +189,7 @@ impl Block {
                 }
                 Ok(0) => break,
                 Ok(_) => {
+                    let str = str.trim_end();
                     if str == "NONE" {
                         tuples.push(None);
                     } else {
@@ -183,6 +198,7 @@ impl Block {
                                 .expect("Could not parse type")
                                 .into_iter(),
                         );
+                        len += 1;
                         tuples.push(Some(tuple));
                     }
                 }
@@ -197,6 +213,7 @@ impl Block {
         unsafe {
             let mutable = self as *const Self as *mut Self;
             (*mutable).block_contents = Some(contents);
+            (*mutable).len = len;
         }
     }
 
@@ -205,8 +222,15 @@ impl Block {
 
         let replaced = std::mem::replace(&mut (*unsafe_self).block_contents, None);
         if let Some(contents) = replaced {
-            let BlockContents { file, internal, .. } = contents;
-            file.set_len(0);
+            let BlockContents {
+                file: _file,
+                internal,
+                ..
+            } = contents;
+            let file_name = self.file_name();
+            std::fs::remove_file(&file_name);
+            let mut file = File::create(file_name).expect("Failed to recreate file");
+
             let mut buf_writer = BufWriter::new(file);
             for tuple in internal {
                 match tuple {
@@ -293,7 +317,7 @@ impl BlockContents {
 
     pub fn insert_tuple(&mut self, index: usize, tuple: Tuple) -> Option<Tuple> {
         if index >= self.internal.len() {
-            self.internal.resize_with(index, Default::default)
+            self.internal.resize_with(index + 1, Default::default)
         }
         std::mem::replace(&mut self.internal[index], Some(tuple))
     }

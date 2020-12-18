@@ -11,3 +11,6 @@ rad_db-types = { path = "../rad_db-types"}
 memmap = "0.7.0"
 num-bigint = "0.3.1"
 num-traits = "0.2.14"
+tokio = "0.3.6"
+rayon = "1.5"
+seahash = "4.0.1"

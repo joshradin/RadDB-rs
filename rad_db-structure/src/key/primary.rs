@@ -4,6 +4,7 @@ use std::ops::Deref;
 
 use num_bigint::{BigUint, ToBigUint};
 use rad_db_types::{SameType, Type};
+use seahash::SeaHasher;
 
 #[derive(Debug, Clone)]
 pub struct PrimaryKeyDefinition(Vec<usize>);
@@ -11,6 +12,24 @@ pub struct PrimaryKeyDefinition(Vec<usize>);
 impl PrimaryKeyDefinition {
     pub fn new(fields: Vec<usize>) -> Self {
         PrimaryKeyDefinition(fields)
+    }
+
+    pub(crate) fn create_seeds(&self) -> [u64; 4] {
+        let mut start: u64 = 0;
+        let add = true;
+        for f in &self.0 {
+            if add {
+                start = start.wrapping_add(*f as u64);
+            } else {
+                start = start.wrapping_mul(*f as u64);
+            }
+        }
+        [
+            start,
+            start.rotate_left(16),
+            start.rotate_left(32),
+            start.rotate_left(48),
+        ]
     }
 }
 
@@ -22,26 +41,25 @@ impl Deref for PrimaryKeyDefinition {
     }
 }
 
-pub struct PrimaryKey<'a>(Vec<&'a Type>);
+pub struct PrimaryKey<'a>(Vec<&'a Type>, [u64; 4]);
 
 impl<'a> PrimaryKey<'a> {
+    pub fn new(attributes: Vec<&'a Type>, seeds: [u64; 4]) -> Self {
+        PrimaryKey(attributes, seeds)
+    }
+
     pub fn hash(&self) -> BigUint {
         let mut hash_value = 0.to_biguint().unwrap();
 
         for ty in self {
             hash_value <<= std::mem::size_of::<u64>() * 8;
-            let mut hasher = DefaultHasher::new();
+            /// seeds need to be consistent between runs
+            let mut hasher = SeaHasher::with_seeds(self.1[0], self.1[1], self.1[2], self.1[3]);
             ty.hash(&mut hasher);
             let single_hashed = hasher.finish().to_biguint().unwrap();
             hash_value |= single_hashed;
         }
         hash_value
-    }
-}
-
-impl<'a> PrimaryKey<'a> {
-    pub fn new(attributes: Vec<&'a Type>) -> Self {
-        PrimaryKey(attributes)
     }
 }
 

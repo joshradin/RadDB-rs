@@ -1,5 +1,6 @@
 use crate::query::query_iterator::QueryBuffer;
 use rad_db_structure::identifier::Identifier;
+use rad_db_structure::relations::tuple_storage::StoredTupleIterator;
 use rad_db_structure::relations::Relation;
 use rad_db_structure::tuple::Tuple;
 use rad_db_types::Type;
@@ -11,29 +12,27 @@ pub enum Projection {
 
 pub struct Crawler<'a> {
     source: &'a Relation,
-    current_index: usize,
+    iterator: Option<StoredTupleIterator<'a>>,
 }
 
 impl<'a> Crawler<'a> {
     pub fn new(source: &'a Relation) -> Self {
         Crawler {
             source,
-            current_index: 0,
+            iterator: None,
         }
     }
 }
 
 impl<'a> Iterator for Crawler<'a> {
-    type Item = &'a Tuple;
+    type Item = Tuple;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.current_index == self.source.len() {
-            return None;
+        if self.iterator.is_none() {
+            self.iterator = Some(self.source.tuples())
         }
 
-        let temp = self.source.get_at_index(self.current_index);
-        self.current_index += 1;
-        Some(temp)
+        self.iterator.as_mut().unwrap().next()
     }
 }
 
@@ -63,7 +62,7 @@ pub struct QueryNode<'a> {
     query: Query<'a>,
     children: Box<QueryChildren<'a>>,
     resulting_relation: Vec<(Identifier, Type)>,
-    buffer: QueryBuffer<'a>,
+    buffer: QueryBuffer,
 }
 
 impl<'a> QueryNode<'a> {
@@ -93,7 +92,7 @@ impl<'a> QueryNode<'a> {
         }
     }
 
-    fn get_tuples_from_source(&self, count: Option<usize>) -> Vec<&'a Tuple> {
+    fn get_tuples_from_source(&self, count: Option<usize>) -> Vec<Tuple> {
         if let Query::Source(source) = &self.query {
             let mut resulting = self.resulting_relation.clone();
         } else {
@@ -104,7 +103,7 @@ impl<'a> QueryNode<'a> {
 }
 
 impl<'a> Iterator for QueryNode<'a> {
-    type Item = &'a Tuple;
+    type Item = Tuple;
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(out) = (&mut self.buffer).next() {

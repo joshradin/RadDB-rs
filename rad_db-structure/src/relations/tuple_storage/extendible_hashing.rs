@@ -2,27 +2,32 @@ use crate::identifier::Identifier;
 use crate::key::primary::{PrimaryKey, PrimaryKeyDefinition};
 use crate::relations::tuple_storage::block::{Block, InUse};
 use crate::relations::tuple_storage::lock::{Lock, LockRead, LockWrite};
+use crate::relations::tuple_storage::TupleStorage;
 use crate::relations::RelationDefinition;
 use crate::tuple::Tuple;
+use crate::Rename;
 use num_bigint::{BigUint, ToBigUint};
 use num_traits::{One, ToPrimitive, Zero};
 use std::cell::UnsafeCell;
 use std::cmp::min;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ops::{Deref, DerefMut};
-use std::sync::{RwLock, RwLockReadGuard};
+use std::sync::{Arc, RwLock, RwLockReadGuard};
 
 /// A local bucket that contains information on the local block
-struct Bucket {
+pub(super) struct Bucket {
     local_depth: usize,
     block: Block,
-    len: usize,
     mask: BigUint,
 }
 
 impl Bucket {
     fn len(&self) -> usize {
-        self.len
+        self.block.len()
+    }
+
+    fn len_mut(&mut self) -> &mut usize {
+        self.block.len_mut()
     }
 
     fn max(&self) -> usize {
@@ -106,7 +111,7 @@ impl BlockDirectory {
             .filter(|(pos, _)| definition.contains(pos))
             .map(|(_, val)| val)
             .collect();
-        PrimaryKey::new(ret)
+        PrimaryKey::new(ret, definition.create_seeds())
     }
 
     fn generate_mask(&mut self) {
@@ -122,18 +127,38 @@ impl BlockDirectory {
         hash & &self.mask
     }
 
-    fn buckets(&self) -> (&Vec<Box<Bucket>>, LockRead) {
+    pub(super) fn buckets(&self) -> (&Vec<Box<Bucket>>, LockRead) {
         unsafe {
             let read = self.bucket_lock.read();
             (&*self.buckets.get(), read)
         }
     }
 
-    fn buckets_mut(&self) -> (&mut Vec<Box<Bucket>>, LockWrite) {
+    pub(super) fn buckets_mut(&self) -> (&mut Vec<Box<Bucket>>, LockWrite) {
         unsafe {
             let write = self.bucket_lock.write();
             (&mut *self.buckets.get(), write)
         }
+    }
+
+    pub(super) fn bucket(&self, index: usize, _read: &LockRead<'_>) -> Option<&Box<Bucket>> {
+        if index >= self.bucket_count() {
+            return None;
+        }
+
+        unsafe { (*self.buckets.get()).get(index) }
+    }
+
+    pub(super) fn bucket_mut(
+        &self,
+        index: usize,
+        _write: &mut LockWrite<'_>,
+    ) -> Option<&mut Box<Bucket>> {
+        if index >= self.bucket_count() {
+            return None;
+        }
+
+        unsafe { (*self.buckets.get()).get_mut(index) }
     }
 
     /// Creates a new block and returns its id/index
@@ -148,7 +173,6 @@ impl BlockDirectory {
         let bucket = Bucket {
             local_depth,
             block,
-            len: 0,
             mask: mask(local_depth).to_biguint().unwrap(),
         };
         buckets.push(Box::new(bucket));
@@ -176,21 +200,25 @@ impl BlockDirectory {
     fn split_bucket(&mut self, bucket_index: usize, directory_number: &BigUint) {
         let (new_block_index, tuples, local_depth) = {
             {
-                let (mut buckets, _lock) = self.buckets();
-                let bucket = &buckets[bucket_index];
-                if bucket.local_depth == self.global_depth {
-                    // Directory expansion
+                let expand = {
+                    let (mut buckets, _lock) = self.buckets();
+                    let bucket = &buckets[bucket_index];
+                    bucket.local_depth == self.global_depth
+                };
+                if expand {
                     self.expand_directory();
                 }
             }
-            let (mut buckets, _lock) = self.buckets_mut();
+            let (mut buckets, lock) = self.buckets_mut();
             let bucket = &mut buckets[bucket_index];
             bucket.local_depth += 1;
             let local_depth = bucket.local_depth;
 
             let mut in_use = bucket.get_contents_mut();
             let mut tuples = in_use.take_all();
-
+            std::mem::drop(in_use);
+            *bucket.len_mut() = 0;
+            std::mem::drop(lock);
             (self.create_new_bucket(local_depth), tuples, local_depth)
         };
 
@@ -205,8 +233,12 @@ impl BlockDirectory {
         let mask = mask(local_depth);
         for tuple in tuples {
             let hash = self.hash_tuple(&tuple);
-            let masked: BigUint = hash & mask.to_biguint().unwrap();
-            let masked = masked.to_usize().unwrap();
+
+            let dir = self.get_directory(&hash);
+            let bucket_from_dir = self.directories.read().unwrap().get(&dir).cloned().unwrap();
+            let as_usize = bucket_from_dir.to_usize().unwrap();
+            let bucket = &mut buckets[as_usize];
+            /*
             let bucket = if masked == bucket_index {
                 &mut buckets[bucket_index]
             } else if masked == new_block_index {
@@ -214,8 +246,10 @@ impl BlockDirectory {
             } else {
                 panic!("Something in the split bucket function went wrong when determining what bucket to put something in")
             };
+
+             */
             let mut use_mut = bucket.get_contents_mut();
-            use_mut.insert_tuple(masked, tuple);
+            use_mut.insert_tuple(as_usize & mask, tuple);
         }
     }
 
@@ -275,84 +309,86 @@ impl BlockDirectory {
     pub fn insert(&mut self, tuple: Tuple, full_hash: BigUint) -> Option<Tuple> {
         let directory_number = self.get_directory(&full_hash);
         let bucket_size = self.bucket_size;
-        let bucket = self.get_bucket_from_directory_mut(directory_number.clone());
-
-        if bucket.len() == bucket_size {
+        let bucket = self.get_bucket_from_directory(directory_number.clone());
+        let split_size = min(bucket_size, bucket.max());
+        let ret = if bucket.len() == split_size {
             // Overflow!
             let bucket_num = self.get_bucket_num(&directory_number).unwrap();
             self.split_bucket(bucket_num, &directory_number);
             self.insert(tuple, full_hash)
         } else {
             // easy insert
+            let bucket = self.get_bucket_from_directory_mut(directory_number.clone());
             let masked = (&bucket.mask & full_hash).to_usize().unwrap();
             let mut in_use = bucket.block.get_contents_mut();
-            let replaced_opt = in_use.insert_tuple(masked, tuple);
-            if replaced_opt.is_none() {
-                bucket.len += 1;
-            }
-            replaced_opt
+            in_use.insert_tuple(masked, tuple)
+        };
+        let bucket = self.get_bucket_from_directory_mut(directory_number.clone());
+        if ret.is_none() {
+            *bucket.len_mut() += 1;
         }
+        ret
     }
 
-    pub fn block_count(&self) -> usize {
+    pub fn bucket_count(&self) -> usize {
         self.buckets().0.len()
     }
 }
 
-pub struct StorageTupleIterator<'a> {
+pub struct StoredTupleIterator<'a> {
+    buffer: VecDeque<Tuple>,
     bucket_num: usize,
-    tuple_num: usize,
-    in_use: Option<InUse<'a>>,
+    max_block_num: usize,
     directory: &'a BlockDirectory,
     read: LockRead<'a>,
 }
 
-impl<'a> StorageTupleIterator<'a> {
+impl<'a> StoredTupleIterator<'a> {
     fn new(directory: &'a BlockDirectory) -> Self {
         let read = directory.bucket_lock.read();
-        StorageTupleIterator {
+        let max_block_num = directory.bucket_count();
+
+        StoredTupleIterator {
+            buffer: Default::default(),
             bucket_num: 0,
-            tuple_num: 0,
-            in_use: None,
+            max_block_num,
             directory,
             read,
         }
     }
 }
 
-impl<'a> Iterator for StorageTupleIterator<'a> {
+impl<'a> Iterator for StoredTupleIterator<'a> {
     type Item = Tuple;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.bucket_num >= self.directory.block_count() {
+        if self.bucket_num >= self.max_block_num {
             return None;
         }
 
-        if let Some(current_iterator) = &mut self.current_iterator {
-            if let Some(next) = current_iterator.next() {
-                return Some(next);
-            } else {
-                self.current_iterator = None;
+        while self.buffer.is_empty() && self.bucket_num < self.max_block_num {
+            let block = self.directory.bucket(self.bucket_num, &self.read).unwrap();
+            let contents = block.get_contents();
+            for tuple in contents.all() {
+                self.buffer.push_back(tuple.clone())
             }
+            self.bucket_num += 1;
         }
+        self.buffer.pop_front()
+    }
+}
 
-        let buckets = unsafe { &*self.directory.buckets.get() };
+impl<'a> IntoIterator for &'a BlockDirectory {
+    type Item = Tuple;
+    type IntoIter = StoredTupleIterator<'a>;
 
-        while let Some(bucket) = buckets.get(self.bucket_num) {
-            self.in_use = Some(bucket.block.get_contents());
-            if let Some(in_use) = &self.in_use {
-                let mut next_iterator = in_use.all();
-                let ret = next_iterator.next();
-                self.bucket_num += 1;
-                if let Some(ret) = ret {
-                    self.current_iterator = Some(Box::new(next_iterator));
-                    Some(ret.clone())
-                }
-            } else {
-                unreachable!()
-            }
-        }
+    fn into_iter(self) -> Self::IntoIter {
+        StoredTupleIterator::new(self)
+    }
+}
 
-        None
+impl Rename<Identifier> for BlockDirectory {
+    fn rename(&mut self, name: Identifier) {
+        self.parent_table = name;
     }
 }

@@ -1,15 +1,19 @@
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::{Hash, Hasher};
+
+use num_bigint::BigUint;
+
+pub use extendible_hashing::StoredTupleIterator;
 
 use crate::identifier::Identifier;
 use crate::key::primary::{PrimaryKey, PrimaryKeyDefinition};
 use crate::relations::tuple_storage::extendible_hashing::BlockDirectory;
 use crate::relations::RelationDefinition;
 use crate::tuple::Tuple;
-use num_bigint::BigUint;
-use std::collections::HashMap;
+use crate::Rename;
 
 mod block;
 mod extendible_hashing;
@@ -65,21 +69,22 @@ impl TupleStorage {
     }
 
     /// Insert an entire tuple into the storage medium
-    fn insert(&mut self, tuple: Tuple) -> InsertionResult<()> {
-        unimplemented!()
+    pub fn insert(&mut self, tuple: Tuple) -> InsertionResult<Option<Tuple>> {
+        let hash = self.hash_tuple(&tuple);
+        Ok(self.true_storage.insert(tuple, hash))
     }
-    fn remove(&mut self, primary_key: PrimaryKey<'_>) -> Result<Tuple, ()> {
-        unimplemented!()
-    }
-
-    fn find_by_primary(&self, primary_key: PrimaryKey<'_>) -> Result<&Tuple, ()> {
-        unimplemented!()
-    }
-    fn all_tuples(&self) -> Vec<&Tuple> {
+    pub fn remove(&mut self, primary_key: PrimaryKey<'_>) -> Result<Tuple, ()> {
         unimplemented!()
     }
 
-    fn hash_tuple(&self, tuple: &Tuple) -> BigUint {
+    pub fn find_by_primary(&self, primary_key: PrimaryKey<'_>) -> Result<&Tuple, ()> {
+        unimplemented!()
+    }
+    pub fn all_tuples(&self) -> StoredTupleIterator {
+        (&self.true_storage).into_iter()
+    }
+
+    pub fn hash_tuple(&self, tuple: &Tuple) -> BigUint {
         let primary_key = self.get_primary_key_of_tuple(tuple);
         primary_key.hash()
     }
@@ -96,7 +101,7 @@ impl TupleStorage {
             .filter(|(pos, _)| definition.contains(pos))
             .map(|(_, val)| val)
             .collect();
-        PrimaryKey::new(ret)
+        PrimaryKey::new(ret, definition.create_seeds())
     }
 
     fn len(&self) -> usize {
@@ -104,5 +109,12 @@ impl TupleStorage {
     }
     fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+}
+
+impl Rename<Identifier> for TupleStorage {
+    fn rename(&mut self, name: Identifier) {
+        self.identifier = name.clone();
+        self.true_storage.rename(name);
     }
 }
