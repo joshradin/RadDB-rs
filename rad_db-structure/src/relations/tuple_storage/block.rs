@@ -29,8 +29,6 @@ use crate::relations::RelationDefinition;
 use crate::tuple::Tuple;
 use std::slice::{Iter, IterMut};
 
-pub const NUM_TUPLES_PER_BLOCK: usize = 512;
-
 pub struct Block {
     parent_table: Identifier,
     relationship_definition: RelationDefinition,
@@ -284,7 +282,6 @@ fn filter_map_helper_mut<T>(input: &mut Option<T>) -> Option<&mut T> {
     input.as_mut()
 }
 
-
 impl BlockContents {
     pub fn get_tuple(&self, index: usize) -> Option<&Tuple> {
         self.internal[index].as_ref()
@@ -295,10 +292,16 @@ impl BlockContents {
     }
 
     pub fn insert_tuple(&mut self, index: usize, tuple: Tuple) -> Option<Tuple> {
+        if index >= self.internal.len() {
+            self.internal.resize_with(index, Default::default)
+        }
         std::mem::replace(&mut self.internal[index], Some(tuple))
     }
 
     pub fn remove_tuple(&mut self, index: usize) -> Option<Tuple> {
+        if index >= self.internal.len() {
+            return None;
+        }
         std::mem::replace(&mut self.internal[index], None)
     }
 
@@ -306,8 +309,24 @@ impl BlockContents {
         self.internal.iter().filter_map(<Option<Tuple>>::as_ref)
     }
 
-    pub fn all_mut(&mut self) -> FilterMap<IterMut<Option<Tuple>>, fn(&mut Option<Tuple>) -> Option<&mut Tuple>> {
+    pub fn all_mut(
+        &mut self,
+    ) -> FilterMap<IterMut<Option<Tuple>>, fn(&mut Option<Tuple>) -> Option<&mut Tuple>> {
         self.internal.iter_mut().filter_map(|item| item.as_mut())
+    }
+
+    pub fn take_all(&mut self) -> Vec<Tuple> {
+        let replace = std::mem::replace(&mut self.internal, Vec::new());
+        replace.into_iter().filter_map(|o| o).collect()
+    }
+
+    pub fn take_all_with_key(&mut self) -> Vec<(usize, Tuple)> {
+        let replace = std::mem::replace(&mut self.internal, Vec::new());
+        replace
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, o)| o.map(|tuple| (index, tuple)))
+            .collect()
     }
 }
 
@@ -346,7 +365,8 @@ impl<'a> IntoIterator for &'a BlockContents {
 
 impl<'a> IntoIterator for &'a mut BlockContents {
     type Item = &'a mut Tuple;
-    type IntoIter = FilterMap<IterMut<'a, Option<Tuple>>, fn(&mut Option<Tuple>) -> Option<&mut Tuple>>;
+    type IntoIter =
+        FilterMap<IterMut<'a, Option<Tuple>>, fn(&mut Option<Tuple>) -> Option<&mut Tuple>>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.all_mut()

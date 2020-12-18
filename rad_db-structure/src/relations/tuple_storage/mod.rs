@@ -3,11 +3,17 @@ use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::hash::{Hash, Hasher};
 
+use crate::identifier::Identifier;
 use crate::key::primary::{PrimaryKey, PrimaryKeyDefinition};
+use crate::relations::tuple_storage::extendible_hashing::BlockDirectory;
+use crate::relations::RelationDefinition;
 use crate::tuple::Tuple;
+use num_bigint::BigUint;
 use std::collections::HashMap;
 
 mod block;
+mod extendible_hashing;
+mod lock;
 
 /// When a tuple couldn't be inserted for some reason
 #[derive(Debug)]
@@ -34,16 +40,28 @@ impl Error for TupleInsertionError {}
 pub type InsertionResult<T> = Result<T, TupleInsertionError>;
 
 pub struct TupleStorage {
+    identifier: Identifier,
+    relation: RelationDefinition,
     primary_key_definition: PrimaryKeyDefinition,
     len: usize,
+    true_storage: BlockDirectory,
 }
 
 impl TupleStorage {
-    pub fn new(primary_key_definition: PrimaryKeyDefinition) -> Self {
-        Self {
-            primary_key_definition,
+    pub fn new(
+        identifier: Identifier,
+        relation: RelationDefinition,
+        primary_key_definition: PrimaryKeyDefinition,
+    ) -> Self {
+        let mut storage = Self {
+            identifier: identifier.clone(),
+            relation: relation.clone(),
+            primary_key_definition: primary_key_definition.clone(),
             len: 0,
-        }
+            true_storage: BlockDirectory::new(identifier, relation, 4096, primary_key_definition),
+        };
+
+        storage
     }
 
     /// Insert an entire tuple into the storage medium
@@ -61,11 +79,9 @@ impl TupleStorage {
         unimplemented!()
     }
 
-    fn hash_tuple(&self, tuple: &Tuple) -> u64 {
+    fn hash_tuple(&self, tuple: &Tuple) -> BigUint {
         let primary_key = self.get_primary_key_of_tuple(tuple);
-        let mut hasher = DefaultHasher::new();
-        primary_key.hash(&mut hasher);
-        hasher.finish()
+        primary_key.hash()
     }
 
     fn get_primary_key_definition(&self) -> &PrimaryKeyDefinition {
@@ -84,7 +100,7 @@ impl TupleStorage {
     }
 
     fn len(&self) -> usize {
-        unimplemented!()
+        self.len
     }
     fn is_empty(&self) -> bool {
         self.len() == 0

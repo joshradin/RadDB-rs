@@ -2,6 +2,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 
+use num_bigint::{BigUint, ToBigUint};
 use rad_db_types::{SameType, Type};
 
 #[derive(Debug, Clone)]
@@ -24,10 +25,17 @@ impl Deref for PrimaryKeyDefinition {
 pub struct PrimaryKey<'a>(Vec<&'a Type>);
 
 impl<'a> PrimaryKey<'a> {
-    pub fn default_hash(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        self.hash(&mut hasher);
-        hasher.finish()
+    pub fn hash(&self) -> BigUint {
+        let mut hash_value = 0.to_biguint().unwrap();
+
+        for ty in self {
+            hash_value <<= std::mem::size_of::<u64>() * 8;
+            let mut hasher = DefaultHasher::new();
+            ty.hash(&mut hasher);
+            let single_hashed = hasher.finish().to_biguint().unwrap();
+            hash_value |= single_hashed;
+        }
+        hash_value
     }
 }
 
@@ -84,11 +92,3 @@ impl<'a> IntoIterator for PrimaryKey<'a> {
 }
 
 impl Eq for PrimaryKey<'_> {}
-
-impl Hash for PrimaryKey<'_> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        for key in self {
-            key.hash(state)
-        }
-    }
-}
