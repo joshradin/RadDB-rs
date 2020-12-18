@@ -3,7 +3,8 @@ use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 
 use num_bigint::{BigUint, ToBigUint};
-use rad_db_types::{SameType, Type};
+use num_traits::FromPrimitive;
+use rad_db_types::{Numeric, SameType, Type};
 use seahash::SeaHasher;
 
 #[derive(Debug, Clone)]
@@ -49,6 +50,13 @@ impl<'a> PrimaryKey<'a> {
     }
 
     pub fn hash(&self) -> BigUint {
+        if self.len() == 1 {
+            if let Type::Numeric(Numeric::Unsigned(unsigned)) = *self.0[0] {
+                let fast: u64 = unsigned.into();
+                return BigUint::from_u64(fast).unwrap();
+            }
+        }
+
         let mut hash_value = 0.to_biguint().unwrap();
 
         for ty in self {

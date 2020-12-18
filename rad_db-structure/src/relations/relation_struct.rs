@@ -5,6 +5,7 @@ use crate::relations::AsTypeList;
 use crate::tuple::Tuple;
 use crate::Rename;
 use rad_db_types::Type;
+use std::fmt::{Debug, Formatter};
 use std::iter::FromIterator;
 use std::ops::{Deref, DerefMut, Index, Shr};
 use std::path::{Path, PathBuf};
@@ -21,6 +22,7 @@ impl Relation {
     pub fn new<S: ToString, I: IntoIterator<Item = (S, Type)>>(
         name: Identifier,
         attributes: I,
+        bucket_size: usize,
         primary_key: PrimaryKeyDefinition,
     ) -> Self {
         let attributes: Vec<(String, Type)> = attributes
@@ -33,7 +35,8 @@ impl Relation {
             .map(|(string, ty)| (Identifier::with_parent(&name, string), ty))
             .collect();
         let definition = RelationDefinition::new(definition);
-        let backing_table = TupleStorage::new(name.clone(), definition, primary_key.clone());
+        let backing_table =
+            TupleStorage::new(name.clone(), definition, primary_key.clone(), bucket_size);
         Relation {
             name,
             attributes,
@@ -41,6 +44,7 @@ impl Relation {
             backing_table,
         }
     }
+
     pub fn name(&self) -> &Identifier {
         &self.name
     }
@@ -264,6 +268,7 @@ impl IntoIterator for &RelationDefinition {
 
 /// A relation that automatically destroys all saved data
 #[repr(transparent)]
+#[derive(Debug)]
 pub struct TempRelation(Relation);
 
 static TEMP_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -300,6 +305,12 @@ impl Drop for TempRelation {
     }
 }
 
+impl Debug for Relation {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.backing_table)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,6 +321,7 @@ mod tests {
         let relation = Relation::new(
             Identifier::new("test"),
             vec![("field1", Type::from(0u8))],
+            4,
             PrimaryKeyDefinition::new(vec![0]),
         )
         .into_temp();
@@ -322,6 +334,7 @@ mod tests {
         let mut relation = Relation::new(
             Identifier::new("test"),
             vec![("field1", Type::from(0u8))],
+            4,
             PrimaryKeyDefinition::new(vec![0]),
         )
         .into_temp();
@@ -338,15 +351,17 @@ mod tests {
         let mut relation = Relation::new(
             Identifier::new("test"),
             vec![("field1", Type::from(0u8))],
+            7,
             PrimaryKeyDefinition::new(vec![0]),
-        ); //.into_temp();
-        let mut sum = 0;
-        for i in 0..8u8 {
-            sum += i;
+        )
+        .into_temp();
+        let mut sum = 0usize;
+        for i in 0..128u8 {
+            sum += i as usize;
             relation.backing_table.insert(Tuple::from_iter(&[i.into()]));
         }
         let mut iterator = relation.tuples();
-        let calc_sum: u8 = iterator
+        let calc_sum: usize = iterator
             .map(|t| t[0].clone())
             .filter_map(|ty| {
                 if let Type::Numeric(Numeric::Unsigned(Unsigned::Byte(ret))) = ty {
@@ -355,7 +370,10 @@ mod tests {
                     None
                 }
             })
+            .map(|i| i as usize)
             .sum();
+
+        println!("{:#?}", relation);
         assert_eq!(calc_sum, sum);
     }
 }

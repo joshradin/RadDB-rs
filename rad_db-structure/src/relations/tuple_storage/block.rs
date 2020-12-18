@@ -6,7 +6,7 @@ use std::fs::OpenOptions;
 use std::hash::Hasher;
 use std::io::Write;
 use std::io::{BufRead, BufReader, BufWriter};
-use std::iter::FilterMap;
+use std::iter::{FilterMap, Map};
 use std::ops::{Deref, DerefMut, Index, IndexMut};
 use std::path::PathBuf;
 use std::ptr::null_mut;
@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender, TryRecvError};
 use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use thread::JoinHandle;
 
 use memmap::{Mmap, MmapMut};
@@ -27,6 +27,7 @@ use rad_db_types::Type;
 use crate::identifier::Identifier;
 use crate::relations::RelationDefinition;
 use crate::tuple::Tuple;
+use num_bigint::BigUint;
 use std::slice::{Iter, IterMut};
 
 pub struct Block {
@@ -171,6 +172,7 @@ impl Block {
     }
 
     unsafe fn load(&self) {
+        //println!("Loading Block {}", self.block_num);
         let path = self.file_name();
         let file = OpenOptions::new()
             .write(true)
@@ -190,17 +192,17 @@ impl Block {
                 Ok(0) => break,
                 Ok(_) => {
                     let str = str.trim_end();
-                    if str == "NONE" {
-                        tuples.push(None);
-                    } else {
-                        let tuple = Tuple::new(
-                            parse_using_types(str, &self.relationship_definition)
-                                .expect("Could not parse type")
-                                .into_iter(),
-                        );
-                        len += 1;
-                        tuples.push(Some(tuple));
-                    }
+                    let mut split = str.splitn(2, ":");
+                    let hash = split.next().unwrap();
+                    let tuple_str = split.next().unwrap();
+
+                    let tuple = Tuple::new(
+                        parse_using_types(tuple_str, &self.relationship_definition)
+                            .expect("Could not parse type")
+                            .into_iter(),
+                    );
+                    len += 1;
+                    tuples.push((BigUint::from_str(hash).unwrap(), tuple));
                 }
             }
         }
@@ -218,6 +220,7 @@ impl Block {
     }
 
     unsafe fn unload(&self) {
+        //println!("Flushing Block {}", self.block_num);
         let unsafe_self = self as *const Self as *mut Self;
 
         let replaced = std::mem::replace(&mut (*unsafe_self).block_contents, None);
@@ -231,13 +234,27 @@ impl Block {
             std::fs::remove_file(&file_name);
             let mut file = File::create(file_name).expect("Failed to recreate file");
 
+            let mut saved = 0;
             let mut buf_writer = BufWriter::new(file);
-            for tuple in internal {
-                match tuple {
-                    Some(tuple) => writeln!(buf_writer, "{}", serialize_values(tuple.into_iter())),
-                    None => writeln!(buf_writer, "NONE"),
-                };
+            let instant = Instant::now();
+            for (hash, tuple) in internal {
+                writeln!(
+                    buf_writer,
+                    "{}:{}",
+                    hash,
+                    serialize_values(tuple.into_iter())
+                )
+                .unwrap();
+                saved += 1;
             }
+            /*
+            println!(
+                "Saved {} Tuples in {} seconds",
+                saved,
+                instant.elapsed().as_secs_f64()
+            )
+
+             */
         }
     }
 }
@@ -296,7 +313,7 @@ impl DerefMut for InUseMut<'_> {
 pub struct BlockContents {
     relationship: RelationDefinition,
     file: File,
-    internal: Vec<Option<Tuple>>,
+    internal: Vec<(BigUint, Tuple)>,
 }
 
 fn filter_map_helper<T>(input: &Option<T>) -> Option<&T> {
@@ -307,80 +324,91 @@ fn filter_map_helper_mut<T>(input: &mut Option<T>) -> Option<&mut T> {
 }
 
 impl BlockContents {
-    pub fn get_tuple(&self, index: usize) -> Option<&Tuple> {
-        self.internal[index].as_ref()
-    }
-
-    pub fn get_tuple_mut(&mut self, index: usize) -> Option<&mut Tuple> {
-        self.internal[index].as_mut()
-    }
-
-    pub fn insert_tuple(&mut self, index: usize, tuple: Tuple) -> Option<Tuple> {
-        if index >= self.internal.len() {
-            self.internal.resize_with(index + 1, Default::default)
+    pub fn get_tuple(&self, hash: BigUint) -> Option<&Tuple> {
+        for (h, tuple) in &self.internal {
+            if h == &hash {
+                return Some(tuple);
+            }
         }
-        std::mem::replace(&mut self.internal[index], Some(tuple))
+        None
     }
 
-    pub fn remove_tuple(&mut self, index: usize) -> Option<Tuple> {
-        if index >= self.internal.len() {
-            return None;
+    pub fn get_tuple_mut(&mut self, hash: BigUint) -> Option<&mut Tuple> {
+        for (h, tuple) in &mut self.internal {
+            if *h == hash {
+                return Some(tuple);
+            }
         }
-        std::mem::replace(&mut self.internal[index], None)
+        None
     }
 
-    pub fn all(&self) -> FilterMap<Iter<Option<Tuple>>, fn(&Option<Tuple>) -> Option<&Tuple>> {
-        self.internal.iter().filter_map(<Option<Tuple>>::as_ref)
+    pub fn insert_tuple(&mut self, hash: BigUint, tuple: Tuple) -> Option<Tuple> {
+        if let Some(old) = self.get_tuple_mut(hash.clone()) {
+            Some(std::mem::replace(old, tuple))
+        } else {
+            self.internal.push((hash, tuple));
+            None
+        }
+    }
+
+    pub fn remove_tuple(&mut self, hash: BigUint) -> Option<Tuple> {
+        let pos = self.internal.iter().position(|(t_hash, _)| t_hash == &hash);
+        if let Some(pos) = pos {
+            Some(self.internal.remove(pos).1)
+        } else {
+            None
+        }
+    }
+
+    pub fn get_tuple_from_inner(input: &(BigUint, Tuple)) -> &Tuple {
+        &input.1
+    }
+
+    pub fn get_tuple_from_inner_mut(input: &mut (BigUint, Tuple)) -> &mut Tuple {
+        &mut input.1
+    }
+
+    pub fn all(&self) -> Map<Iter<(BigUint, Tuple)>, fn(&(BigUint, Tuple)) -> &Tuple> {
+        self.internal.iter().map(Self::get_tuple_from_inner)
+    }
+
+    pub fn all_with_key(&self) -> &Vec<(BigUint, Tuple)> {
+        &self.internal
     }
 
     pub fn all_mut(
         &mut self,
-    ) -> FilterMap<IterMut<Option<Tuple>>, fn(&mut Option<Tuple>) -> Option<&mut Tuple>> {
-        self.internal.iter_mut().filter_map(|item| item.as_mut())
+    ) -> Map<IterMut<(BigUint, Tuple)>, fn(&mut (BigUint, Tuple)) -> &mut Tuple> {
+        self.internal.iter_mut().map(Self::get_tuple_from_inner_mut)
     }
 
     pub fn take_all(&mut self) -> Vec<Tuple> {
         let replace = std::mem::replace(&mut self.internal, Vec::new());
-        replace.into_iter().filter_map(|o| o).collect()
+        replace.into_iter().map(|(_, t)| t).collect()
     }
 
-    pub fn take_all_with_key(&mut self) -> Vec<(usize, Tuple)> {
-        let replace = std::mem::replace(&mut self.internal, Vec::new());
-        replace
-            .into_iter()
-            .enumerate()
-            .filter_map(|(index, o)| o.map(|tuple| (index, tuple)))
-            .collect()
+    pub fn take_all_with_key(&mut self) -> Vec<(BigUint, Tuple)> {
+        std::mem::replace(&mut self.internal, Vec::new())
     }
 }
 
-impl Index<usize> for BlockContents {
+impl Index<BigUint> for BlockContents {
     type Output = Tuple;
 
-    fn index(&self, index: usize) -> &Self::Output {
-        match self.internal[index].as_ref() {
-            None => {
-                panic!("{} out of bounds", index)
-            }
-            Some(r) => r,
-        }
+    fn index(&self, index: BigUint) -> &Self::Output {
+        self.get_tuple(index).unwrap()
     }
 }
 
-impl IndexMut<usize> for BlockContents {
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        match self.internal[index].as_mut() {
-            None => {
-                panic!("{} out of bounds", index)
-            }
-            Some(r) => r,
-        }
+impl IndexMut<BigUint> for BlockContents {
+    fn index_mut(&mut self, index: BigUint) -> &mut Self::Output {
+        self.get_tuple_mut(index).unwrap()
     }
 }
 
 impl<'a> IntoIterator for &'a BlockContents {
     type Item = &'a Tuple;
-    type IntoIter = FilterMap<Iter<'a, Option<Tuple>>, fn(&Option<Tuple>) -> Option<&Tuple>>;
+    type IntoIter = Map<Iter<'a, (BigUint, Tuple)>, fn(&(BigUint, Tuple)) -> &Tuple>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.all()
@@ -389,8 +417,7 @@ impl<'a> IntoIterator for &'a BlockContents {
 
 impl<'a> IntoIterator for &'a mut BlockContents {
     type Item = &'a mut Tuple;
-    type IntoIter =
-        FilterMap<IterMut<'a, Option<Tuple>>, fn(&mut Option<Tuple>) -> Option<&mut Tuple>>;
+    type IntoIter = Map<IterMut<'a, (BigUint, Tuple)>, fn(&mut (BigUint, Tuple)) -> &mut Tuple>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.all_mut()

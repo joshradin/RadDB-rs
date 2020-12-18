@@ -11,7 +11,8 @@ use num_traits::{One, ToPrimitive, Zero};
 use std::cell::UnsafeCell;
 use std::cmp::min;
 use std::collections::{HashMap, VecDeque};
-use std::ops::{Deref, DerefMut};
+use std::fmt::{Debug, Formatter};
+use std::ops::{BitAnd, Deref, DerefMut};
 use std::sync::{Arc, RwLock, RwLockReadGuard};
 
 /// A local bucket that contains information on the local block
@@ -124,7 +125,7 @@ impl BlockDirectory {
     }
 
     fn get_directory(&self, hash: &BigUint) -> BigUint {
-        hash & &self.mask
+        hash.bitand(&self.mask)
     }
 
     pub(super) fn buckets(&self) -> (&Vec<Box<Bucket>>, LockRead) {
@@ -175,6 +176,7 @@ impl BlockDirectory {
             block,
             mask: mask(local_depth).to_biguint().unwrap(),
         };
+
         buckets.push(Box::new(bucket));
         id
     }
@@ -198,6 +200,7 @@ impl BlockDirectory {
     }
 
     fn split_bucket(&mut self, bucket_index: usize, directory_number: &BigUint) {
+        //println!("[BEFORE split] {:#?}", self);
         let (new_block_index, tuples, local_depth) = {
             {
                 let expand = {
@@ -230,7 +233,6 @@ impl BlockDirectory {
 
         let (mut buckets, _lock) = self.buckets_mut();
 
-        let mask = mask(local_depth);
         for tuple in tuples {
             let hash = self.hash_tuple(&tuple);
 
@@ -249,8 +251,9 @@ impl BlockDirectory {
 
              */
             let mut use_mut = bucket.get_contents_mut();
-            use_mut.insert_tuple(as_usize & mask, tuple);
+            use_mut.insert_tuple(hash, tuple);
         }
+        //println!("[AFTER split] {:#?}", self);
     }
 
     fn get_bucket_num(&self, directory: &BigUint) -> Option<usize> {
@@ -310,7 +313,7 @@ impl BlockDirectory {
         let directory_number = self.get_directory(&full_hash);
         let bucket_size = self.bucket_size;
         let bucket = self.get_bucket_from_directory(directory_number.clone());
-        let split_size = min(bucket_size, bucket.max());
+        let split_size = bucket_size;
         let ret = if bucket.len() == split_size {
             // Overflow!
             let bucket_num = self.get_bucket_num(&directory_number).unwrap();
@@ -319,9 +322,9 @@ impl BlockDirectory {
         } else {
             // easy insert
             let bucket = self.get_bucket_from_directory_mut(directory_number.clone());
-            let masked = (&bucket.mask & full_hash).to_usize().unwrap();
+
             let mut in_use = bucket.block.get_contents_mut();
-            in_use.insert_tuple(masked, tuple)
+            in_use.insert_tuple(full_hash, tuple)
         };
         let bucket = self.get_bucket_from_directory_mut(directory_number.clone());
         if ret.is_none() {
@@ -362,7 +365,7 @@ impl<'a> Iterator for StoredTupleIterator<'a> {
     type Item = Tuple;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.bucket_num >= self.max_block_num {
+        if self.buffer.is_empty() && self.bucket_num >= self.max_block_num {
             return None;
         }
 
@@ -390,5 +393,40 @@ impl<'a> IntoIterator for &'a BlockDirectory {
 impl Rename<Identifier> for BlockDirectory {
     fn rename(&mut self, name: Identifier) {
         self.parent_table = name;
+    }
+}
+
+impl Debug for BlockDirectory {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "{} Block Directory {{", self.parent_table)?;
+        writeln!(f, "\tGlobal Depth = {}", self.global_depth)?;
+        writeln!(f, "\tMask = {:b}", self.mask)?;
+        writeln!(f, "\tDirectories:")?;
+        let guard = self.directories.read().unwrap();
+        for (key, value) in &*guard {
+            writeln!(f, "\t\t{:b} -> {}", key, value)?;
+        }
+        writeln!(f, "\tBuckets:")?;
+        let buckets = unsafe { &*self.buckets.get() };
+        for (index, bucket) in buckets.iter().enumerate() {
+            write!(
+                f,
+                "\t\tBucket {}: Length={} Local Depth={}",
+                index,
+                bucket.len(),
+                bucket.local_depth,
+            )?;
+            if f.alternate() {
+                writeln!(f, " Contents {{ ")?;
+                let content = bucket.get_contents();
+                for tuple in content.all_with_key() {
+                    writeln!(f, "\t\t\t{}: {}", tuple.0, tuple.1)?;
+                }
+                writeln!(f, "\t\t}}")?;
+            } else {
+                writeln!(f)?;
+            }
+        }
+        write!(f, "}}")
     }
 }

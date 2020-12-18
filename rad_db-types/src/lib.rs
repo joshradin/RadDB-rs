@@ -357,6 +357,17 @@ impl SameType for Vec<&Type> {
     }
 }
 
+impl Into<u64> for Unsigned {
+    fn into(self) -> u64 {
+        match self {
+            Unsigned::Byte(b) => b as u64,
+            Unsigned::Short(s) => s as u64,
+            Unsigned::Int(i) => i as u64,
+            Unsigned::Long(u) => u,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

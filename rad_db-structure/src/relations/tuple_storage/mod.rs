@@ -43,6 +43,7 @@ impl Error for TupleInsertionError {}
 
 pub type InsertionResult<T> = Result<T, TupleInsertionError>;
 
+#[derive(Debug)]
 pub struct TupleStorage {
     identifier: Identifier,
     relation: RelationDefinition,
@@ -56,13 +57,19 @@ impl TupleStorage {
         identifier: Identifier,
         relation: RelationDefinition,
         primary_key_definition: PrimaryKeyDefinition,
+        max_size: usize,
     ) -> Self {
         let mut storage = Self {
             identifier: identifier.clone(),
             relation: relation.clone(),
             primary_key_definition: primary_key_definition.clone(),
             len: 0,
-            true_storage: BlockDirectory::new(identifier, relation, 4096, primary_key_definition),
+            true_storage: BlockDirectory::new(
+                identifier,
+                relation,
+                max_size,
+                primary_key_definition,
+            ),
         };
 
         storage
@@ -71,7 +78,9 @@ impl TupleStorage {
     /// Insert an entire tuple into the storage medium
     pub fn insert(&mut self, tuple: Tuple) -> InsertionResult<Option<Tuple>> {
         let hash = self.hash_tuple(&tuple);
-        Ok(self.true_storage.insert(tuple, hash))
+        let result = Ok(self.true_storage.insert(tuple, hash));
+        //println!("{:#?}", self.true_storage);
+        result
     }
     pub fn remove(&mut self, primary_key: PrimaryKey<'_>) -> Result<Tuple, ()> {
         unimplemented!()

@@ -1,7 +1,9 @@
 use std::ops::{Deref, DerefMut};
 
+use rad_db_types::serialization::serialize_values;
 use rad_db_types::Type;
 use std::error::Error;
+use std::fmt::{Display, Formatter};
 use std::iter::FromIterator;
 use std::str::FromStr;
 
@@ -39,6 +41,15 @@ impl IntoIterator for Tuple {
     }
 }
 
+impl<'a> IntoIterator for &'a Tuple {
+    type Item = &'a Type;
+    type IntoIter = <&'a Vec<Type> as IntoIterator>::IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
 impl FromIterator<Type> for Tuple {
     fn from_iter<T: IntoIterator<Item = Type>>(iter: T) -> Self {
         Self::new(iter)
@@ -48,5 +59,11 @@ impl FromIterator<Type> for Tuple {
 impl<'a> FromIterator<&'a Type> for Tuple {
     fn from_iter<T: IntoIterator<Item = &'a Type>>(iter: T) -> Self {
         Self::new(iter.into_iter().cloned())
+    }
+}
+
+impl Display for Tuple {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", serialize_values(self.clone()))
     }
 }
