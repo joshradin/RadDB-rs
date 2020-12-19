@@ -43,12 +43,12 @@ pub struct Block {
 
 impl Block {
     pub fn len(&self) -> usize {
+        /*
         let contents = self.get_contents();
         contents.internal.len()
-    }
 
-    pub fn len_mut(&mut self) -> &mut usize {
-        &mut self.len
+         */
+        self.len
     }
 }
 

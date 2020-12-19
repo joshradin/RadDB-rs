@@ -29,10 +29,6 @@ impl Bucket {
         self.block.len()
     }
 
-    fn len_mut(&mut self) -> &mut usize {
-        self.block.len_mut()
-    }
-
     fn max(&self) -> usize {
         1 << (self.local_depth - 1)
     }
@@ -359,7 +355,7 @@ impl BlockDirectory {
             in_use.insert_tuple(full_hash, tuple)
         };
         if ret.is_none() {
-            *bucket.len_mut() += 1;
+            //*bucket.len_mut() += 1;
             if bucket.len() > self.bucket_size {
                 panic!(
                     "Added too many tuples to bucket {}",
