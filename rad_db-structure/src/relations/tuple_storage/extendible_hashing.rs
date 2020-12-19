@@ -222,7 +222,6 @@ impl BlockDirectory {
             let mut in_use = bucket.get_contents_mut();
             let mut tuples = in_use.take_all();
             std::mem::drop(in_use);
-            *bucket.len_mut() = 0;
             std::mem::drop(lock);
             (self.create_new_bucket(local_depth), tuples, local_depth)
         };

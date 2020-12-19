@@ -295,6 +295,36 @@ pub struct InUseMut<'a> {
     write: RwLockWriteGuard<'a, ()>,
 }
 
+impl<'a> InUseMut<'a> {
+    pub fn insert_tuple(&mut self, hash: BigUint, tuple: Tuple) -> Option<Tuple> {
+        let ret = (**self).insert_tuple(hash, tuple);
+        if ret.is_none() {
+            self.parent.len += 1;
+        }
+        ret
+    }
+
+    pub fn remove_tuple(&mut self, hash: BigUint) -> Option<Tuple> {
+        let ret = (**self).remove_tuple(hash);
+        if ret.is_some() {
+            self.parent.len -= 1;
+        }
+        ret
+    }
+
+    pub fn take_all(&mut self) -> Vec<Tuple> {
+        let ret = (**self).take_all();
+        self.parent.len = 0;
+        ret
+    }
+
+    pub fn take_all_with_key(&mut self) -> Vec<(BigUint, Tuple)> {
+        let ret = (**self).take_all_with_key();
+        self.parent.len = 0;
+        ret
+    }
+}
+
 impl Drop for InUseMut<'_> {
     fn drop(&mut self) {
         unsafe { self.parent.unload() }
@@ -347,7 +377,7 @@ impl BlockContents {
         None
     }
 
-    pub fn insert_tuple(&mut self, hash: BigUint, tuple: Tuple) -> Option<Tuple> {
+    fn insert_tuple(&mut self, hash: BigUint, tuple: Tuple) -> Option<Tuple> {
         if let Some(old) = self.get_tuple_mut(hash.clone()) {
             Some(std::mem::replace(old, tuple))
         } else {
@@ -356,7 +386,7 @@ impl BlockContents {
         }
     }
 
-    pub fn remove_tuple(&mut self, hash: BigUint) -> Option<Tuple> {
+    fn remove_tuple(&mut self, hash: BigUint) -> Option<Tuple> {
         let pos = self.internal.iter().position(|(t_hash, _)| t_hash == &hash);
         if let Some(pos) = pos {
             Some(self.internal.remove(pos).1)
@@ -387,12 +417,12 @@ impl BlockContents {
         self.internal.iter_mut().map(Self::get_tuple_from_inner_mut)
     }
 
-    pub fn take_all(&mut self) -> Vec<Tuple> {
+    fn take_all(&mut self) -> Vec<Tuple> {
         let replace = std::mem::replace(&mut self.internal, Vec::new());
         replace.into_iter().map(|(_, t)| t).collect()
     }
 
-    pub fn take_all_with_key(&mut self) -> Vec<(BigUint, Tuple)> {
+    fn take_all_with_key(&mut self) -> Vec<(BigUint, Tuple)> {
         std::mem::replace(&mut self.internal, Vec::new())
     }
 }
