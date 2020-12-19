@@ -61,7 +61,7 @@ impl Relation {
     }
 
     pub fn len(&self) -> usize {
-        unimplemented!()
+        self.backing_table.len()
     }
 
     pub fn get_relation_definition(&self) -> RelationDefinition {
@@ -425,43 +425,41 @@ mod tests {
     /// Splits one bucket many times before splitting the other
     #[test]
     fn late_split() {
-        let mut relation = Relation::new(
-            Identifier::new("test"),
-            vec![("field1", Type::from(0u64))],
-            3,
-            PrimaryKeyDefinition::new(vec![0]),
-        )
-        .into_temp();
+        for block_size in 1..=64 {
+            let mut relation = Relation::new(
+                Identifier::new("test"),
+                vec![("field1", Type::from(0u64))],
+                3,
+                PrimaryKeyDefinition::new(vec![0]),
+            )
+            .into_temp();
 
-        // Insert one even
+            // Insert one even
 
-        relation
-            .backing_table
-            .insert(Tuple::from_iter(&[Type::from(0u64)]))
-            .unwrap();
-        println!("{:#?}", relation);
-        // Insert many odds
-        for i in 0..32 {
-            let value: u64 = 2 * i + 1;
             relation
                 .backing_table
-                .insert(Tuple::from_iter(&[Type::from(value)]))
+                .insert(Tuple::from_iter(&[Type::from(0u64)]))
                 .unwrap();
-            //
-        }
-        println!("{:#?}", relation);
-        println!("Inserted all odds and one even. Should result in many buckets for odds and one bucket for even.");
 
-        // Insert many evens
-        for i in 1..32 {
-            let value: u64 = 2 * i;
-            println!("{:#?}", relation);
-            println!("Inserting [{}]", value);
-            relation
-                .backing_table
-                .insert(Tuple::from_iter(&[Type::from(value)]))
-                .unwrap();
+            // Insert many odds
+            for i in 0..32 {
+                let value: u64 = 2 * i + 1;
+                relation
+                    .backing_table
+                    .insert(Tuple::from_iter(&[Type::from(value)]))
+                    .unwrap();
+                //
+            }
+
+            // Insert many evens
+            for i in 1..32 {
+                let value: u64 = 2 * i;
+                relation
+                    .backing_table
+                    .insert(Tuple::from_iter(&[Type::from(value)]))
+                    .unwrap();
+            }
+            assert_eq!(relation.len(), 64);
         }
-        println!("{:#?}", relation);
     }
 }

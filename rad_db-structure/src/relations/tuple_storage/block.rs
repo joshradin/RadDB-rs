@@ -173,6 +173,11 @@ impl Block {
         ret
     }
 
+    /// Determines if the contents of the block is loaded
+    fn load_status(&self) -> bool {
+        self.block_contents.is_some()
+    }
+
     unsafe fn load(&self) {
         //println!("Loading Block {}", self.block_num);
         let path = self.file_name();
@@ -260,6 +265,16 @@ impl Block {
             )
 
              */
+        }
+    }
+}
+
+impl Drop for Block {
+    fn drop(&mut self) {
+        if self.load_status() {
+            unsafe {
+                self.unload();
+            }
         }
     }
 }

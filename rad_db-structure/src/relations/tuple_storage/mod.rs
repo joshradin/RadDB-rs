@@ -48,7 +48,6 @@ pub struct TupleStorage {
     identifier: Identifier,
     relation: RelationDefinition,
     primary_key_definition: PrimaryKeyDefinition,
-    len: usize,
     true_storage: BlockDirectory,
 }
 
@@ -63,7 +62,6 @@ impl TupleStorage {
             identifier: identifier.clone(),
             relation: relation.clone(),
             primary_key_definition: primary_key_definition.clone(),
-            len: 0,
             true_storage: BlockDirectory::new(
                 identifier,
                 relation,
@@ -113,8 +111,8 @@ impl TupleStorage {
         PrimaryKey::new(ret, definition.create_seeds())
     }
 
-    fn len(&self) -> usize {
-        self.len
+    pub(crate) fn len(&self) -> usize {
+        self.true_storage.len()
     }
     fn is_empty(&self) -> bool {
         self.len() == 0
