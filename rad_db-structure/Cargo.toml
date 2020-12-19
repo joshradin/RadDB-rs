@@ -14,3 +14,8 @@ num-traits = "0.2.14"
 tokio = "0.3.6"
 rayon = "1.5"
 seahash = "4.0.1"
+log = "0.4"
+env_logger = "0.8"
+
+[dev-dependencies]
+rand = "0.7.3"

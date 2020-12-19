@@ -45,6 +45,11 @@ impl Relation {
         }
     }
 
+    /// Loads the relation from memory
+    pub fn load_from_memory(id: Identifier) -> Self {
+        unimplemented!()
+    }
+
     pub fn name(&self) -> &Identifier {
         &self.name
     }
@@ -279,6 +284,7 @@ impl TempRelation {
         let name = format!("temp{}", id);
         let fixed = Identifier::concat(name, &relation.name);
         relation.rename(fixed);
+        std::fs::remove_dir_all(PathBuf::from(&relation.name));
         Self(relation)
     }
 }
@@ -307,7 +313,11 @@ impl Drop for TempRelation {
 
 impl Debug for Relation {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.backing_table)
+        if f.alternate() {
+            write!(f, "{:#?}", self.backing_table)
+        } else {
+            write!(f, "{:?}", self.backing_table)
+        }
     }
 }
 
@@ -353,7 +363,7 @@ mod tests {
             vec![("field1", Type::from(0u8))],
             7,
             PrimaryKeyDefinition::new(vec![0]),
-        )
+        ) //;
         .into_temp();
         let mut sum = 0usize;
         for i in 0..128u8 {
@@ -375,5 +385,83 @@ mod tests {
 
         println!("{:#?}", relation);
         assert_eq!(calc_sum, sum);
+    }
+
+    #[test]
+    fn add_many_random() {
+        let mut relation = Relation::new(
+            Identifier::new("test"),
+            vec![("field1", Type::from(0u64))],
+            7,
+            PrimaryKeyDefinition::new(vec![0]),
+        )
+        .into_temp();
+        let mut sum = 0u64;
+        for i in 0..256 {
+            println!("Inserting tuple {}", i);
+            let random: u32 = rand::random();
+            let random = random as u64;
+            sum += random;
+            relation
+                .backing_table
+                .insert(Tuple::from_iter(&[random.into()]));
+        }
+        let mut iterator = relation.tuples();
+        let calc_sum: u64 = iterator
+            .map(|t| t[0].clone())
+            .filter_map(|ty| {
+                if let Type::Numeric(Numeric::Unsigned(Unsigned::Long(ret))) = ty {
+                    Some(ret)
+                } else {
+                    None
+                }
+            })
+            .sum();
+
+        println!("{:#?}", relation);
+        assert_eq!(calc_sum, sum);
+    }
+
+    /// Splits one bucket many times before splitting the other
+    #[test]
+    fn late_split() {
+        let mut relation = Relation::new(
+            Identifier::new("test"),
+            vec![("field1", Type::from(0u64))],
+            3,
+            PrimaryKeyDefinition::new(vec![0]),
+        )
+        .into_temp();
+
+        // Insert one even
+
+        relation
+            .backing_table
+            .insert(Tuple::from_iter(&[Type::from(0u64)]))
+            .unwrap();
+        println!("{:#?}", relation);
+        // Insert many odds
+        for i in 0..32 {
+            let value: u64 = 2 * i + 1;
+            relation
+                .backing_table
+                .insert(Tuple::from_iter(&[Type::from(value)]))
+                .unwrap();
+            //
+        }
+        println!("{:#?}", relation);
+        println!("Inserted all odds and one even. Should result in many buckets for odds and one bucket for even.");
+
+        // Insert many evens
+        for i in 1..32 {
+            let value: u64 = 2 * i;
+            println!("{:#?}", relation);
+            println!("Inserting [{}]", value);
+            relation
+                .backing_table
+                .insert(Tuple::from_iter(&[Type::from(value)]))
+                .unwrap();
+        }
+        println!("{:#?}", relation);
     }
 }

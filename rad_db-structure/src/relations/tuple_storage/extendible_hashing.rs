@@ -1,3 +1,13 @@
+use std::cell::UnsafeCell;
+use std::cmp::min;
+use std::collections::{HashMap, VecDeque};
+use std::fmt::{Debug, Formatter};
+use std::ops::{BitAnd, Deref, DerefMut};
+use std::sync::{Arc, RwLock, RwLockReadGuard};
+
+use num_bigint::{BigUint, ToBigUint};
+use num_traits::{One, ToPrimitive, Zero};
+
 use crate::identifier::Identifier;
 use crate::key::primary::{PrimaryKey, PrimaryKeyDefinition};
 use crate::relations::tuple_storage::block::{Block, InUse};
@@ -6,14 +16,6 @@ use crate::relations::tuple_storage::TupleStorage;
 use crate::relations::RelationDefinition;
 use crate::tuple::Tuple;
 use crate::Rename;
-use num_bigint::{BigUint, ToBigUint};
-use num_traits::{One, ToPrimitive, Zero};
-use std::cell::UnsafeCell;
-use std::cmp::min;
-use std::collections::{HashMap, VecDeque};
-use std::fmt::{Debug, Formatter};
-use std::ops::{BitAnd, Deref, DerefMut};
-use std::sync::{Arc, RwLock, RwLockReadGuard};
 
 /// A local bucket that contains information on the local block
 pub(super) struct Bucket {
@@ -200,7 +202,7 @@ impl BlockDirectory {
     }
 
     fn split_bucket(&mut self, bucket_index: usize, directory_number: &BigUint) {
-        //println!("[BEFORE split] {:#?}", self);
+        // println!("[BEFORE split] {:?}", self);
         let (new_block_index, tuples, local_depth) = {
             {
                 let expand = {
@@ -226,11 +228,36 @@ impl BlockDirectory {
         };
 
         {
-            let higher_directory = directory_number | (BigUint::one() << (local_depth - 1));
-            let mut directories = self.directories.write().unwrap();
-            directories.insert(higher_directory, new_block_index);
-        }
+            let small_mask = mask(local_depth - 1).to_biguint().unwrap();
+            let original_real_check = small_mask & directory_number;
 
+            let higher_directory_check =
+                original_real_check | (BigUint::one() << (local_depth - 1));
+            let mut directories = self.directories.write().unwrap();
+            let local_mask = mask(local_depth);
+
+            /*
+            let local_mask =
+            let mut rewrite =
+            for key in directories.keys() {
+                if &(key & directory_number) == key {
+
+                }
+            }
+
+             */
+
+            for dir in directories.iter_mut() {
+                let masked_local = dir.0 & BigUint::from(local_mask);
+                //let check = &masked & &higher_directory_check;
+                if &masked_local == &higher_directory_check && dir.1 == &bucket_index {
+                    *dir.1 = new_block_index;
+                }
+            }
+
+            //directories.insert(higher_directory_check, new_block_index);
+        }
+        //println!("[DURING split] {:?}", self);
         let (mut buckets, _lock) = self.buckets_mut();
 
         for tuple in tuples {
@@ -253,7 +280,7 @@ impl BlockDirectory {
             let mut use_mut = bucket.get_contents_mut();
             use_mut.insert_tuple(hash, tuple);
         }
-        //println!("[AFTER split] {:#?}", self);
+        // println!("[AFTER split] {:#?}", self);
     }
 
     fn get_bucket_num(&self, directory: &BigUint) -> Option<usize> {
@@ -310,31 +337,69 @@ impl BlockDirectory {
     }
 
     pub fn insert(&mut self, tuple: Tuple, full_hash: BigUint) -> Option<Tuple> {
-        let directory_number = self.get_directory(&full_hash);
-        let bucket_size = self.bucket_size;
-        let bucket = self.get_bucket_from_directory(directory_number.clone());
-        let split_size = bucket_size;
-        let ret = if bucket.len() == split_size {
-            // Overflow!
-            let bucket_num = self.get_bucket_num(&directory_number).unwrap();
-            self.split_bucket(bucket_num, &directory_number);
-            self.insert(tuple, full_hash)
-        } else {
-            // easy insert
-            let bucket = self.get_bucket_from_directory_mut(directory_number.clone());
+        let (bucket, directory_number) = {
+            let directory_number = self.get_directory(&full_hash);
+            let bucket_size = self.bucket_size;
+            let bucket = self.get_bucket_from_directory(directory_number.clone());
+            let len = bucket.len();
+            if len == bucket_size {
+                // Overflow!
+                let bucket_num = self.get_bucket_num(&directory_number).unwrap();
+                self.split_bucket(bucket_num, &directory_number);
+                return self.insert(tuple, full_hash);
+            } else {
+                // easy insert
+                let bucket = self.get_bucket_from_directory_mut(directory_number.clone());
+                (bucket, directory_number)
+            }
+        };
+        //let bucket = self.get_bucket_from_directory_mut(directory_number.clone());
 
+        let ret = {
             let mut in_use = bucket.block.get_contents_mut();
             in_use.insert_tuple(full_hash, tuple)
         };
-        let bucket = self.get_bucket_from_directory_mut(directory_number.clone());
         if ret.is_none() {
             *bucket.len_mut() += 1;
+            if bucket.len() > self.bucket_size {
+                panic!(
+                    "Added too many tuples to bucket {}",
+                    self.get_bucket_num(&directory_number).unwrap()
+                )
+            }
         }
         ret
     }
 
+    pub(super) fn get_bucket_for_primary_key(&self, full_hash: BigUint) -> &Bucket {
+        let directory_number = self.get_directory(&full_hash);
+        self.get_bucket_from_directory(directory_number.clone())
+    }
+
     pub fn bucket_count(&self) -> usize {
         self.buckets().0.len()
+    }
+
+    pub unsafe fn len_unsafe(&self) -> usize {
+        let mut output = 0;
+
+        let buckets = &*self.buckets.get();
+        for b in buckets {
+            output += b.block.len()
+        }
+
+        output
+    }
+
+    pub fn len(&self) -> usize {
+        let mut output = 0;
+
+        let (buckets, _) = self.buckets();
+        for b in buckets {
+            output += b.block.len()
+        }
+
+        output
     }
 }
 
@@ -399,8 +464,12 @@ impl Rename<Identifier> for BlockDirectory {
 impl Debug for BlockDirectory {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "{} Block Directory {{", self.parent_table)?;
+        unsafe {
+            writeln!(f, "\tLen = {}", self.len_unsafe())?;
+        }
         writeln!(f, "\tGlobal Depth = {}", self.global_depth)?;
         writeln!(f, "\tMask = {:b}", self.mask)?;
+        writeln!(f, "\tBucket Size = {}", self.bucket_size)?;
         writeln!(f, "\tDirectories:")?;
         let guard = self.directories.read().unwrap();
         for (key, value) in &*guard {

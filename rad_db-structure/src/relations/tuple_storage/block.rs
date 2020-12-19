@@ -29,6 +29,7 @@ use crate::relations::RelationDefinition;
 use crate::tuple::Tuple;
 use num_bigint::BigUint;
 use std::slice::{Iter, IterMut};
+use tokio::io::AsyncWrite;
 
 pub struct Block {
     parent_table: Identifier,
@@ -42,7 +43,8 @@ pub struct Block {
 
 impl Block {
     pub fn len(&self) -> usize {
-        self.len
+        let contents = self.get_contents();
+        contents.internal.len()
     }
 
     pub fn len_mut(&mut self) -> &mut usize {
@@ -99,7 +101,7 @@ impl Block {
             usage: RwLock::new(()),
             reads: Default::default(),
         };
-        ret.initialize_file();
+        ret.initialize_file().unwrap();
         ret
     }
 
@@ -232,11 +234,12 @@ impl Block {
             } = contents;
             let file_name = self.file_name();
             std::fs::remove_file(&file_name);
+
             let mut file = File::create(file_name).expect("Failed to recreate file");
 
             let mut saved = 0;
             let mut buf_writer = BufWriter::new(file);
-            let instant = Instant::now();
+
             for (hash, tuple) in internal {
                 writeln!(
                     buf_writer,
@@ -247,6 +250,8 @@ impl Block {
                 .unwrap();
                 saved += 1;
             }
+            //(*unsafe_self).len = saved;
+            buf_writer.flush();
             /*
             println!(
                 "Saved {} Tuples in {} seconds",
