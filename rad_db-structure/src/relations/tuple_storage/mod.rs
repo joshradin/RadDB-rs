@@ -6,7 +6,7 @@ use std::hash::{Hash, Hasher};
 
 use num_bigint::BigUint;
 
-pub use extendible_hashing::StoredTupleIterator;
+pub use extendible_hashing::{BlockIterator, StoredTupleIterator};
 
 use crate::identifier::Identifier;
 use crate::key::primary::{PrimaryKey, PrimaryKeyDefinition};
@@ -58,7 +58,7 @@ impl TupleStorage {
         primary_key_definition: PrimaryKeyDefinition,
         max_size: usize,
     ) -> Self {
-        let mut storage = Self {
+        Self {
             identifier: identifier.clone(),
             relation: relation.clone(),
             primary_key_definition: primary_key_definition.clone(),
@@ -68,9 +68,16 @@ impl TupleStorage {
                 max_size,
                 primary_key_definition,
             ),
-        };
+        }
+    }
 
-        storage
+    pub fn to_skeleton(&self) -> Self {
+        Self::new(
+            self.identifier.clone(),
+            self.relation.clone(),
+            self.primary_key_definition.clone(),
+            self.true_storage.bucket_size(),
+        )
     }
 
     /// Insert an entire tuple into the storage medium
@@ -87,8 +94,18 @@ impl TupleStorage {
     pub fn find_by_primary(&self, primary_key: PrimaryKey<'_>) -> Result<&Tuple, ()> {
         unimplemented!()
     }
+    /// Gets a [StoredTupleIterator] for the tuple storage
+    ///
+    /// [StoredTupleIterator]: StoredTupleIterator
     pub fn all_tuples(&self) -> StoredTupleIterator {
         (&self.true_storage).into_iter()
+    }
+
+    /// Gets a [BlockIterator] for the tuple storage
+    ///
+    /// [BlockIterator]: self::BlockIterator
+    pub fn blocks(&self) -> BlockIterator {
+        (&self.true_storage).blocks()
     }
 
     pub fn hash_tuple(&self, tuple: &Tuple) -> BigUint {

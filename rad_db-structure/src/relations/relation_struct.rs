@@ -1,15 +1,17 @@
-use crate::identifier::Identifier;
-use crate::key::primary::PrimaryKeyDefinition;
-use crate::relations::tuple_storage::{StoredTupleIterator, TupleStorage};
-use crate::relations::AsTypeList;
-use crate::tuple::Tuple;
-use crate::Rename;
-use rad_db_types::Type;
 use std::fmt::{Debug, Formatter};
 use std::iter::FromIterator;
 use std::ops::{Deref, DerefMut, Index, Shr};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+use rad_db_types::Type;
+
+use crate::identifier::Identifier;
+use crate::key::primary::PrimaryKeyDefinition;
+use crate::relations::tuple_storage::{BlockIterator, StoredTupleIterator, TupleStorage};
+use crate::relations::AsTypeList;
+use crate::tuple::Tuple;
+use crate::Rename;
 
 pub struct Relation {
     name: Identifier,
@@ -36,7 +38,7 @@ impl Relation {
             .collect();
         let definition = RelationDefinition::new(definition);
         let backing_table =
-            TupleStorage::new(name.clone(), definition, primary_key.clone(), bucket_size);
+            Relation::generate_tuple_storage(&name, bucket_size, &primary_key, definition);
         Relation {
             name,
             attributes,
@@ -45,23 +47,43 @@ impl Relation {
         }
     }
 
+    fn generate_tuple_storage(
+        name: &Identifier,
+        bucket_size: usize,
+        primary_key: &PrimaryKeyDefinition,
+        definition: RelationDefinition,
+    ) -> TupleStorage {
+        TupleStorage::new(name.clone(), definition, primary_key.clone(), bucket_size)
+    }
+
     /// Loads the relation from memory
     pub fn load_from_memory(id: Identifier) -> Self {
         unimplemented!()
     }
 
+    /// Gets the name of the relation
     pub fn name(&self) -> &Identifier {
         &self.name
     }
+
+    /// Gets the name and types of the relation
     pub fn attributes(&self) -> &Vec<(String, Type)> {
         &self.attributes
     }
+
+    /// Gets the primary key definition of the relation
     pub fn primary_key(&self) -> &PrimaryKeyDefinition {
         &self.primary_key
     }
 
+    /// Gets the amount of tuples in the relation
     pub fn len(&self) -> usize {
         self.backing_table.len()
+    }
+
+    /// Gets whether there are tuples in the relation or not
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub fn get_relation_definition(&self) -> RelationDefinition {
@@ -73,10 +95,22 @@ impl Relation {
         RelationDefinition::new(ret)
     }
 
+    /// Gets a [StoredTupleIterator] for the tuple storage
+    ///
+    /// [StoredTupleIterator]: tuple_storage::StoredTupleIterator
     pub fn tuples(&self) -> StoredTupleIterator {
         self.backing_table.all_tuples()
     }
 
+    /// Gets a [BlockIterator] for the tuple storage
+    ///
+    /// [BlockIterator]: tuple_storage::BlockIterator
+    pub fn blocks(&self) -> BlockIterator {
+        self.backing_table.blocks()
+    }
+
+    /// Makes the relation temporary, so that it's contents are deleted from the
+    /// file system after the relation drops
     pub fn into_temp(self) -> TempRelation {
         TempRelation::new(self)
     }
@@ -305,9 +339,12 @@ impl DerefMut for TempRelation {
 
 impl Drop for TempRelation {
     fn drop(&mut self) {
+        let skeleton = self.backing_table.to_skeleton();
+        let internals = std::mem::replace(&mut self.backing_table, skeleton);
+        std::mem::drop(internals);
         let mut file = PathBuf::from("DB_STORAGE");
         file.push(PathBuf::from(&self.name));
-        std::fs::remove_dir_all(file.parent().unwrap());
+        std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
     }
 }
 
@@ -323,8 +360,9 @@ impl Debug for Relation {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rad_db_types::{Numeric, Unsigned};
+
+    use super::*;
 
     #[test]
     fn empty_relation() {
@@ -392,12 +430,47 @@ mod tests {
         let mut relation = Relation::new(
             Identifier::new("test"),
             vec![("field1", Type::from(0u64))],
-            7,
+            64,
             PrimaryKeyDefinition::new(vec![0]),
         )
         .into_temp();
         let mut sum = 0u64;
-        for i in 0..256 {
+        for i in 0..2048 {
+            println!("Inserting tuple {}", i);
+            let random: u32 = rand::random();
+            let random = random as u64;
+            sum += random;
+            relation
+                .backing_table
+                .insert(Tuple::from_iter(&[random.into()]));
+        }
+        let mut iterator = relation.tuples();
+        let calc_sum: u64 = iterator
+            .map(|t| t[0].clone())
+            .filter_map(|ty| {
+                if let Type::Numeric(Numeric::Unsigned(Unsigned::Long(ret))) = ty {
+                    Some(ret)
+                } else {
+                    None
+                }
+            })
+            .sum();
+
+        println!("{:#?}", relation);
+        assert_eq!(calc_sum, sum);
+    }
+
+    #[test]
+    fn add_large_random() {
+        let mut relation = Relation::new(
+            Identifier::new("test"),
+            vec![("field1", Type::from(0u64))],
+            128,
+            PrimaryKeyDefinition::new(vec![0]),
+        )
+        .into_temp();
+        let mut sum = 0u64;
+        for i in 0..(1 << 14) {
             println!("Inserting tuple {}", i);
             let random: u32 = rand::random();
             let random = random as u64;
@@ -429,7 +502,7 @@ mod tests {
             let mut relation = Relation::new(
                 Identifier::new("test"),
                 vec![("field1", Type::from(0u64))],
-                3,
+                32,
                 PrimaryKeyDefinition::new(vec![0]),
             )
             .into_temp();
@@ -460,6 +533,7 @@ mod tests {
                     .unwrap();
             }
             assert_eq!(relation.len(), 64);
+            println!()
         }
     }
 }

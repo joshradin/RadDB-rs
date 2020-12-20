@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs::File;
@@ -11,7 +11,7 @@ use std::ops::{Deref, DerefMut, Index, IndexMut};
 use std::path::PathBuf;
 use std::ptr::null_mut;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender, TryRecvError};
 use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::thread;
@@ -31,6 +31,11 @@ use num_bigint::BigUint;
 use std::slice::{Iter, IterMut};
 use tokio::io::AsyncWrite;
 
+/// The number of durations to included in the access rolling average
+pub const ROLLING_AVERAGE_COUNT: usize = 100;
+/// The minimum amount of time in milliseconds the rolling average must be to keep the block loaded in memory
+pub const MIN_TIME_FOR_MAINTAIN_LOAD: u128 = 500;
+
 pub struct Block {
     parent_table: Identifier,
     relationship_definition: RelationDefinition,
@@ -39,6 +44,8 @@ pub struct Block {
     len: usize,
     usage: RwLock<()>,
     reads: AtomicUsize,
+    access_info: RwLock<AccessInformation>,
+    load_block: AtomicBool,
 }
 
 impl Block {
@@ -100,6 +107,8 @@ impl Block {
             len: 0,
             usage: RwLock::new(()),
             reads: Default::default(),
+            access_info: Default::default(),
+            load_block: Default::default(),
         };
         ret.initialize_file().unwrap();
         ret
@@ -130,7 +139,8 @@ impl Block {
     pub fn try_get_contents(&self) -> Result<InUse, ReadInUseError> {
         let read_guard = self.usage.read()?;
         self.reads.fetch_add(1, Ordering::Acquire);
-        if self.block_contents.is_none() {
+        self.notify_access();
+        if !self.load_status() {
             unsafe {
                 self.load();
             }
@@ -150,7 +160,8 @@ impl Block {
     pub fn try_get_contents_mut(&mut self) -> Result<InUseMut, WriteInUseError> {
         let write_copy = (self as *mut Self);
         let write_guard = self.usage.write()?;
-        if self.block_contents.is_none() {
+        self.notify_access();
+        if !self.load_status() {
             unsafe {
                 self.load();
             }
@@ -178,8 +189,26 @@ impl Block {
         self.block_contents.is_some()
     }
 
+    fn notify_access(&self) {
+        let mut access_info = self.access_info.write().unwrap();
+        access_info.add_access();
+    }
+
+    fn notify_finish(&self) {
+        let mut access_info = self.access_info.read().unwrap();
+        if self.reads.load(Ordering::Acquire) == 0
+            && self.load_status()
+            && access_info.should_unload()
+        {
+            unsafe {
+                self.unload();
+            }
+        }
+    }
+
     unsafe fn load(&self) {
         //println!("Loading Block {}", self.block_num);
+        while self.load_block.load(Ordering::Relaxed) {}
         let path = self.file_name();
         let file = OpenOptions::new()
             .write(true)
@@ -229,7 +258,10 @@ impl Block {
     unsafe fn unload(&self) {
         //println!("Flushing Block {}", self.block_num);
         let unsafe_self = self as *const Self as *mut Self;
-
+        while self
+            .load_block
+            .compare_and_swap(false, true, Ordering::Relaxed)
+        {}
         let replaced = std::mem::replace(&mut (*unsafe_self).block_contents, None);
         if let Some(contents) = replaced {
             let BlockContents {
@@ -238,7 +270,7 @@ impl Block {
                 ..
             } = contents;
             let file_name = self.file_name();
-            std::fs::remove_file(&file_name);
+            std::fs::remove_file(&file_name).unwrap();
 
             let mut file = File::create(file_name).expect("Failed to recreate file");
 
@@ -257,6 +289,7 @@ impl Block {
             }
             //(*unsafe_self).len = saved;
             buf_writer.flush();
+            self.load_block.store(false, Ordering::Release);
             /*
             println!(
                 "Saved {} Tuples in {} seconds",
@@ -275,6 +308,55 @@ impl Drop for Block {
             unsafe {
                 self.unload();
             }
+        }
+    }
+}
+
+#[derive(Default)]
+struct AccessInformation {
+    last_access: Option<Instant>,
+    access_delays: Vec<Duration>,
+    current_access: usize,
+}
+
+impl AccessInformation {
+    pub fn add_access(&mut self) {
+        let access = Instant::now();
+        if self.last_access.is_none() {
+            self.last_access = Some(access);
+        } else {
+            let last = std::mem::replace(&mut self.last_access, Some(access)).unwrap();
+            let duration = last.elapsed();
+
+            if self.access_delays.len() < ROLLING_AVERAGE_COUNT {
+                self.access_delays.push(duration);
+            } else {
+                self.access_delays[self.current_access] = duration;
+            }
+            self.current_access += 1;
+            if self.current_access >= ROLLING_AVERAGE_COUNT {
+                self.current_access = 0;
+            }
+        }
+    }
+
+    /// Gets the rolling average in milliseconds
+    fn rolling_average(&self) -> Option<u128> {
+        if self.access_delays.is_empty() {
+            return None;
+        }
+        let mut ret = 0;
+        for access in &self.access_delays {
+            ret += access.as_millis();
+        }
+        Some(ret / self.access_delays.len() as u128)
+    }
+
+    /// Whether the block should unload after this access
+    fn should_unload(&self) -> bool {
+        match self.rolling_average() {
+            None => true,
+            Some(average) => average > MIN_TIME_FOR_MAINTAIN_LOAD,
         }
     }
 }
@@ -299,9 +381,8 @@ impl Deref for InUse<'_> {
 
 impl Drop for InUse<'_> {
     fn drop(&mut self) {
-        if self.parent.reads.fetch_sub(1, Ordering::Acquire) == 1 {
-            unsafe { self.parent.unload() }
-        }
+        self.parent.reads.fetch_sub(1, Ordering::Acquire);
+        self.parent.notify_finish();
     }
 }
 
@@ -342,7 +423,7 @@ impl<'a> InUseMut<'a> {
 
 impl Drop for InUseMut<'_> {
     fn drop(&mut self) {
-        unsafe { self.parent.unload() }
+        self.parent.notify_finish()
     }
 }
 

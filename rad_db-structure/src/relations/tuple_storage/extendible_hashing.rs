@@ -2,7 +2,7 @@ use std::cell::UnsafeCell;
 use std::cmp::min;
 use std::collections::{HashMap, VecDeque};
 use std::fmt::{Debug, Formatter};
-use std::ops::{BitAnd, Deref, DerefMut};
+use std::ops::{BitAnd, Deref, DerefMut, Not};
 use std::sync::{Arc, RwLock, RwLockReadGuard};
 
 use num_bigint::{BigUint, ToBigUint};
@@ -35,6 +35,10 @@ impl Bucket {
 
     fn mask(&self) -> usize {
         mask(self.local_depth)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -95,6 +99,10 @@ impl BlockDirectory {
             mask: BigUint::one(),
             primary_key_definition,
         }
+    }
+
+    pub(super) fn bucket_size(&self) -> usize {
+        self.bucket_size
     }
 
     fn hash_tuple(&self, tuple: &Tuple) -> BigUint {
@@ -213,6 +221,7 @@ impl BlockDirectory {
             let (mut buckets, lock) = self.buckets_mut();
             let bucket = &mut buckets[bucket_index];
             bucket.local_depth += 1;
+            bucket.mask = mask(bucket.local_depth).to_biguint().unwrap();
             let local_depth = bucket.local_depth;
 
             let mut in_use = bucket.get_contents_mut();
@@ -273,6 +282,7 @@ impl BlockDirectory {
 
              */
             let mut use_mut = bucket.get_contents_mut();
+
             use_mut.insert_tuple(hash, tuple);
         }
         // println!("[AFTER split] {:#?}", self);
@@ -386,6 +396,7 @@ impl BlockDirectory {
         output
     }
 
+    /// Gets the amount of tuples in the directory
     pub fn len(&self) -> usize {
         let mut output = 0;
 
@@ -396,8 +407,61 @@ impl BlockDirectory {
 
         output
     }
+
+    /// Retrieves a block iterator of the directory
+    pub fn blocks(&self) -> BlockIterator {
+        BlockIterator::new(self)
+    }
 }
 
+/// An iterator that goes through each block of the relation at a time. It _doesn't_ load every block
+/// into memory, and only does when the block is needed. Writes can not be made to the relation until
+/// after the iterator is dropped.
+pub struct BlockIterator<'a> {
+    bucket_num: usize,
+    max_block_num: usize,
+    directory: &'a BlockDirectory,
+    read: LockRead<'a>,
+}
+
+impl<'a> BlockIterator<'a> {
+    fn new(directory: &'a BlockDirectory) -> Self {
+        let read = directory.bucket_lock.read();
+        let max_block_num = directory.bucket_count();
+
+        BlockIterator {
+            bucket_num: 0,
+            max_block_num,
+            directory,
+            read,
+        }
+    }
+}
+
+impl<'a> Iterator for BlockIterator<'a> {
+    type Item = Vec<Tuple>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.bucket_num >= self.max_block_num {
+            return None;
+        }
+
+        while self.bucket_num < self.max_block_num {
+            let bucket = self.directory.bucket(self.bucket_num, &self.read).unwrap();
+            self.bucket_num += 1;
+            if !bucket.is_empty() {
+                let contents = bucket.block.get_contents();
+                let ret: Vec<_> = contents.all().cloned().collect();
+                return Some(ret);
+            }
+        }
+        None
+    }
+}
+
+/// An iterator that goes through every tuple stored in relation. It _doesn't_ load every tuple
+/// into memory at once in order to save space in memory. When the iterator is produced, no
+/// writes can be made to the relation until the iterator is dropped.
 pub struct StoredTupleIterator<'a> {
     buffer: VecDeque<Tuple>,
     bucket_num: usize,
@@ -453,6 +517,23 @@ impl<'a> IntoIterator for &'a BlockDirectory {
 impl Rename<Identifier> for BlockDirectory {
     fn rename(&mut self, name: Identifier) {
         self.parent_table = name;
+    }
+}
+
+impl Drop for BlockDirectory {
+    /// Concurrently drops all of the blocks in storage
+    fn drop(&mut self) {
+        let buckets = std::mem::replace(&mut self.buckets, UnsafeCell::new(Vec::new()));
+        let buckets = buckets.into_inner();
+        let handles = buckets.into_iter().map(|bucket| {
+            std::thread::spawn(move || {
+                std::mem::drop(bucket);
+            })
+        });
+        /// Join all so no issues with others trying to make same file after it should be deleted
+        for handle in handles {
+            handle.join();
+        }
     }
 }
 

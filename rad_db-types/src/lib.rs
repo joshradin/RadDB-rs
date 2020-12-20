@@ -9,6 +9,9 @@ use std::hash::{Hash, Hasher};
 pub mod deserialization;
 pub mod serialization;
 
+/// Values and Types are equivalent!
+pub type Value = Type;
+
 #[derive(Debug, Clone, Copy, PartialOrd, PartialEq)]
 pub enum Numeric {
     Float(f32),

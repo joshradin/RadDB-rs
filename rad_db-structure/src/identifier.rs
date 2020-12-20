@@ -3,7 +3,7 @@ use std::fmt::{Display, Formatter};
 use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Identifier {
     parent: Option<Box<Identifier>>,
     base: String,

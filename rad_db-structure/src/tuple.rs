@@ -1,4 +1,4 @@
-use std::ops::{Deref, DerefMut};
+use std::ops::{Add, Deref, DerefMut};
 
 use rad_db_types::serialization::serialize_values;
 use rad_db_types::Type;
@@ -15,6 +15,12 @@ pub struct Tuple(Vec<Type>);
 impl Tuple {
     pub fn new<I: IntoIterator<Item = Type>>(values: I) -> Self {
         Tuple(values.into_iter().collect())
+    }
+
+    pub fn concat(self, other: Self) -> Self {
+        let mut backing = self.0;
+        backing.extend(other);
+        Self(backing)
     }
 }
 
@@ -65,5 +71,13 @@ impl<'a> FromIterator<&'a Type> for Tuple {
 impl Display for Tuple {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", serialize_values(self.clone()))
+    }
+}
+
+impl Add for Tuple {
+    type Output = Tuple;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        self.concat(rhs)
     }
 }
