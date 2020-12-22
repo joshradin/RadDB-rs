@@ -1,3 +1,4 @@
+use crate::query::conditions::JoinCondition;
 use crate::query::query_iterator::QueryBuffer;
 use crate::query::query_result::QueryResult;
 use rad_db_structure::identifier::Identifier;
@@ -59,9 +60,9 @@ pub enum Query<'a> {
     Projection(Vec<Projection>),
     Selection(Box<dyn Fn(&Tuple) -> bool>),
     CrossProduct,
-    InnerJoin(Identifier, Identifier),
-    LeftJoin(Identifier, Identifier),
-    RightJoin(Identifier, Identifier),
+    InnerJoin(JoinCondition),
+    LeftJoin(JoinCondition),
+    RightJoin(JoinCondition),
     NaturalJoin,
 }
 
@@ -132,43 +133,36 @@ impl<'a> QueryNode<'a> {
         self
     }
 
-    pub fn execute_query(mut self) -> QueryResult {
+    pub fn execute_query(self) -> QueryResult {
         let mut output_tuples: Vec<Tuple> = vec![];
         let relation = self.resulting_relation.clone();
         match (self.query, *self.children) {
-            (Query::InnerJoin(left_id, right_id), QueryChildren::Two(mut left, mut right)) => {
-                let left_id = &self.mapping[&left_id];
-                let right_id = &self.mapping[&right_id];
-                match (&left.query, &right.query) {
-                    (Query::Source(_), Query::Source(_)) => {
-                        if let (Query::Source(left_source), Query::Source(right_source)) =
-                            (left.query, right.query)
-                        {
-                            for left_block in left_source {
-                                for right_block in right_source {}
-                            }
-                        } else {
-                            unreachable!()
-                        }
-                    }
-                    (_, _) => {
-                        let left = left.execute_query();
-                        let right = right.execute_query();
-                        for left_tuple in &left {
-                            for right_tuple in &right {
+            (Query::InnerJoin(join), QueryChildren::Two(mut left, mut right)) => {
+                let left_id = &self.mapping[join.left_id()];
+                let right_id = &self.mapping[join.right_id()];
+
+                let left = left.execute_query();
+                let right = right.execute_query();
+                let left_blocks = left.blocks();
+                let right_blocks = right.blocks();
+                for left_block in left_blocks {
+                    for right_block in right_blocks {
+                        for left_tuple in &left_block {
+                            for right_tuple in &right_block {
                                 if left.get_value_in_tuple(&left_id, &left_tuple)
                                     == right.get_value_in_tuple(&right_id, &right_tuple)
                                 {
-                                    output_tuples.push(left_tuple.clone() + right_tuple);
+                                    output_tuples.push(left_tuple.clone() + right_tuple.clone());
                                 }
                             }
                         }
                     }
                 }
             }
+
             _ => panic!("Invalid query"),
         }
 
-        QueryResult::new(relation, output_tuples)
+        QueryResult::with_tuples(relation, output_tuples)
     }
 }

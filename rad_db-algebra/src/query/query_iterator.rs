@@ -30,7 +30,7 @@ impl QueryBuffer {
     ///
     /// # Panic
     /// Will panic if the buffer becomes full and another tuples is attempted to be added
-    pub fn push_all<I : IntoIterator<Item=Tuple>>(&mut self, iterator: I) {
+    pub fn push_all<I: IntoIterator<Item = Tuple>>(&mut self, iterator: I) {
         self.storage.extend(iterator)
     }
 
