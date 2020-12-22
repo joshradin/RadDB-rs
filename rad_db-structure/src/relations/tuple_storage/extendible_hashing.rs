@@ -436,6 +436,10 @@ impl<'a> BlockIterator<'a> {
             read,
         }
     }
+
+    pub fn repeatable(self) -> RepeatableBlockIterator<'a> {
+        RepeatableBlockIterator::from(self)
+    }
 }
 
 impl<'a> Iterator for BlockIterator<'a> {
@@ -456,6 +460,58 @@ impl<'a> Iterator for BlockIterator<'a> {
             }
         }
         None
+    }
+}
+
+pub struct RepeatableBlockIterator<'a> {
+    bucket_num: usize,
+    max_block_num: usize,
+    directory: &'a BlockDirectory,
+    read: LockRead<'a>,
+}
+
+impl<'a> RepeatableBlockIterator<'a> {
+    fn new(directory: &'a BlockDirectory) -> Self {
+        let read = directory.bucket_lock.read();
+        let max_block_num = directory.bucket_count();
+
+        RepeatableBlockIterator {
+            bucket_num: 0,
+            max_block_num,
+            directory,
+            read,
+        }
+    }
+}
+
+impl<'a> From<BlockIterator<'a>> for RepeatableBlockIterator<'a> {
+    fn from(i: BlockIterator<'a>) -> Self {
+        let BlockIterator {
+            bucket_num,
+            max_block_num,
+            directory,
+            read,
+        } = i;
+        Self {
+            bucket_num,
+            max_block_num,
+            directory,
+            read,
+        }
+    }
+}
+
+impl<'a> IntoIterator for &RepeatableBlockIterator<'a> {
+    type Item = Vec<Tuple>;
+    type IntoIter = BlockIterator<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        BlockIterator {
+            bucket_num: 0,
+            max_block_num: self.bucket_num,
+            directory: self.directory,
+            read: self.read.clone(),
+        }
     }
 }
 

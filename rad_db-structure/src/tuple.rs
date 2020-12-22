@@ -1,11 +1,15 @@
-use std::ops::{Add, Deref, DerefMut};
-
-use rad_db_types::serialization::serialize_values;
-use rad_db_types::Type;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::iter::FromIterator;
+use std::ops::{
+    Add, Deref, DerefMut, Index, IndexMut, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo,
+    RangeToInclusive, Sub,
+};
 use std::str::FromStr;
+
+use rad_db_types::serialization::serialize_values;
+use rad_db_types::{Type, Value};
+use std::cmp::Reverse;
 
 /// Represents a single row within a database.
 /// A tuple knows no information about itself besides its contents
@@ -21,6 +25,16 @@ impl Tuple {
         let mut backing = self.0;
         backing.extend(other);
         Self(backing)
+    }
+
+    pub fn remove_at_indexes<I: IntoIterator<Item = usize>>(self, indexes: I) -> Self {
+        let mut removal: Vec<usize> = indexes.into_iter().collect();
+        removal.sort_by_key(|u| Reverse(*u));
+        let mut values = self.0;
+        for remove in removal {
+            values.remove(remove);
+        }
+        Tuple(values)
     }
 }
 
@@ -79,5 +93,113 @@ impl Add for Tuple {
 
     fn add(self, rhs: Self) -> Self::Output {
         self.concat(rhs)
+    }
+}
+
+impl Add<&Tuple> for Tuple {
+    type Output = Tuple;
+
+    fn add(self, rhs: &Tuple) -> Self::Output {
+        self.concat(rhs.clone())
+    }
+}
+
+impl Add<Tuple> for &Tuple {
+    type Output = Tuple;
+
+    fn add(self, rhs: Tuple) -> Self::Output {
+        self.clone().concat(rhs)
+    }
+}
+
+impl Add<&Tuple> for &Tuple {
+    type Output = Tuple;
+
+    fn add(self, rhs: &Tuple) -> Self::Output {
+        self.clone().concat(rhs.clone())
+    }
+}
+
+impl Index<usize> for Tuple {
+    type Output = Value;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        self.get(index).unwrap()
+    }
+}
+
+impl IndexMut<usize> for Tuple {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        self.get_mut(index).unwrap()
+    }
+}
+
+impl Index<Range<usize>> for Tuple {
+    type Output = [Type];
+
+    fn index(&self, index: Range<usize>) -> &Self::Output {
+        self.0.get(index).unwrap()
+    }
+}
+
+impl Index<RangeFrom<usize>> for Tuple {
+    type Output = [Type];
+
+    fn index(&self, index: RangeFrom<usize>) -> &Self::Output {
+        self.0.get(index).unwrap()
+    }
+}
+
+impl Index<RangeTo<usize>> for Tuple {
+    type Output = [Type];
+
+    fn index(&self, index: RangeTo<usize>) -> &Self::Output {
+        self.0.get(index).unwrap()
+    }
+}
+
+impl Index<RangeInclusive<usize>> for Tuple {
+    type Output = [Type];
+
+    fn index(&self, index: RangeInclusive<usize>) -> &Self::Output {
+        self.0.get(index).unwrap()
+    }
+}
+
+impl Index<RangeToInclusive<usize>> for Tuple {
+    type Output = [Type];
+
+    fn index(&self, index: RangeToInclusive<usize>) -> &Self::Output {
+        self.0.get(index).unwrap()
+    }
+}
+
+impl Index<RangeFull> for Tuple {
+    type Output = [Type];
+
+    fn index(&self, index: RangeFull) -> &Self::Output {
+        self.0.get(index).unwrap()
+    }
+}
+
+impl Sub<&[usize]> for Tuple {
+    type Output = Tuple;
+
+    fn sub(self, rhs: &[usize]) -> Self::Output {
+        let mut removal: Vec<usize> = <[usize]>::to_vec(&Box::new(rhs));
+        removal.sort_by_key(|u| Reverse(*u));
+        let mut values = self.0;
+        for remove in removal {
+            values.remove(remove);
+        }
+        Tuple(values)
+    }
+}
+
+impl Sub<&[usize]> for &Tuple {
+    type Output = Tuple;
+
+    fn sub(self, rhs: &[usize]) -> Self::Output {
+        self.clone() - rhs
     }
 }

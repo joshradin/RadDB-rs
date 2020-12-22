@@ -77,7 +77,6 @@ pub struct QueryNode<'a> {
     children: Box<QueryChildren<'a>>,
     resulting_relation: Vec<(Identifier, Type)>,
     mapping: HashMap<Identifier, Identifier>,
-    buffer: QueryBuffer,
 }
 
 impl<'a> QueryNode<'a> {
@@ -99,7 +98,6 @@ impl<'a> QueryNode<'a> {
                 .map(|(id, val)| (Identifier::new(id), val.clone()))
                 .collect(),
             mapping,
-            buffer: QueryBuffer::new(),
         }
     }
 
@@ -122,7 +120,23 @@ impl<'a> QueryNode<'a> {
                 .map(|(id, val)| (Identifier::concat(&name, id), val.clone()))
                 .collect(),
             mapping,
-            buffer: QueryBuffer::new(),
+        }
+    }
+
+    pub fn inner_join(left: QueryNode<'a>, right: QueryNode<'a>, condition: JoinCondition) -> Self {
+        let mut result = Vec::new();
+        result.extend(left.resulting_relation.iter().cloned());
+        result.extend(right.resulting_relation.iter().cloned());
+        let mapping = result
+            .iter()
+            .map(|(id, _)| (id.clone(), id.clone()))
+            .collect();
+
+        QueryNode {
+            query: Query::InnerJoin(condition),
+            children: Box::new(QueryChildren::Two(left, right)),
+            resulting_relation: result,
+            mapping: mapping,
         }
     }
 
@@ -137,29 +151,68 @@ impl<'a> QueryNode<'a> {
         let mut output_tuples: Vec<Tuple> = vec![];
         let relation = self.resulting_relation.clone();
         match (self.query, *self.children) {
-            (Query::InnerJoin(join), QueryChildren::Two(mut left, mut right)) => {
-                let left_id = &self.mapping[join.left_id()];
-                let right_id = &self.mapping[join.right_id()];
+            (Query::InnerJoin(join), QueryChildren::Two(left, right)) => {
+                let left_id = &self.mapping[join.left_id()]; // the name of the left id in the left result
+                let right_id = &self.mapping[join.right_id()]; // the name of the right id in the right result
 
                 let left = left.execute_query();
                 let right = right.execute_query();
-                let left_blocks = left.blocks();
-                let right_blocks = right.blocks();
-                for left_block in left_blocks {
-                    for right_block in right_blocks {
-                        for left_tuple in &left_block {
-                            for right_tuple in &right_block {
-                                if left.get_value_in_tuple(&left_id, &left_tuple)
-                                    == right.get_value_in_tuple(&right_id, &right_tuple)
-                                {
-                                    output_tuples.push(left_tuple.clone() + right_tuple.clone());
+
+                let left_mappings = left.identifier_mappings();
+                let right_mappings = right.identifier_mappings();
+
+                let left_index = left_mappings[left_id];
+                let right_index = right_mappings[right_id];
+
+                if right.repeatable_blocks().is_some() {
+                    let left_blocks = left.blocks();
+                    for left_block in left_blocks {
+                        let right_blocks = right.repeatable_blocks().unwrap();
+                        for right_block in right_blocks {
+                            for left_tuple in &left_block {
+                                for right_tuple in &right_block {
+                                    if left_tuple[left_index] == right_tuple[right_index] {
+                                        output_tuples.push(left_tuple + right_tuple);
+                                    }
                                 }
+                            }
+                        }
+                    }
+                } else {
+                    let mut right = right;
+                    for left_tuple in left {
+                        for right_tuple in &mut right {
+                            if left_tuple[left_index] == right_tuple[right_index] {
+                                output_tuples.push(&left_tuple + right_tuple);
                             }
                         }
                     }
                 }
             }
-
+            (Query::CrossProduct, QueryChildren::Two(left, right)) => {
+                let left = left.execute_query();
+                let right = right.execute_query();
+                if right.repeatable_blocks().is_some() {
+                    let left_blocks = left.blocks();
+                    for left_block in left_blocks {
+                        let right_blocks = right.repeatable_blocks().unwrap();
+                        for right_block in right_blocks {
+                            for left_tuple in &left_block {
+                                for right_tuple in &right_block {
+                                    output_tuples.push(left_tuple + right_tuple);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    let mut right = right;
+                    for left_tuple in left {
+                        for right_tuple in &mut right {
+                            output_tuples.push(&left_tuple + right_tuple);
+                        }
+                    }
+                }
+            }
             _ => panic!("Invalid query"),
         }
 

@@ -53,6 +53,15 @@ impl Lock {
 /// Locks a write lock from being formed, but still allows for more than one read to be made
 pub struct LockRead<'a>(&'a Lock);
 
+impl Clone for LockRead<'_> {
+    /// Can create more reads from a single read, and will extend the read until all LockRead instances
+    /// have been dropped
+    fn clone(&self) -> Self {
+        self.0.read.fetch_add(1, Ordering::Acquire);
+        LockRead(self.0)
+    }
+}
+
 impl Drop for LockRead<'_> {
     fn drop(&mut self) {
         self.0.read.fetch_sub(1, Ordering::Release);
