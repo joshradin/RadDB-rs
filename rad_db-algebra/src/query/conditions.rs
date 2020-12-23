@@ -1,4 +1,5 @@
 use rad_db_structure::identifier::Identifier;
+use rad_db_types::Value;
 
 #[derive(Debug)]
 pub struct JoinCondition {
@@ -18,3 +19,20 @@ impl JoinCondition {
         &self.right_id
     }
 }
+
+pub enum Operand {
+    Id(Identifier),
+    SignedNumber(i64),
+    UnsignedNumber(u64),
+    Float(f64),
+    String(String),
+}
+
+pub enum ConditionOperation {
+    Equals(Operand),
+    Nequals(Operand),
+    And(Box<ConditionOperation>, Box<Condition>),
+    Or(Box<ConditionOperation>, Box<Condition>),
+}
+
+pub struct Condition;

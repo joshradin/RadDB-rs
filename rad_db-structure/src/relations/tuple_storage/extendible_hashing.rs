@@ -78,6 +78,7 @@ pub struct BlockDirectory {
     directories: RwLock<HashMap<BigUint, usize>>,
     mask: BigUint,
     primary_key_definition: PrimaryKeyDefinition,
+    volatile: bool,
 }
 
 impl BlockDirectory {
@@ -98,6 +99,27 @@ impl BlockDirectory {
             directories: Default::default(),
             mask: BigUint::one(),
             primary_key_definition,
+            volatile: false,
+        }
+    }
+
+    pub fn new_volatile(
+        parent_table: Identifier,
+        relationship_definition: RelationDefinition,
+        bucket_size: usize,
+        primary_key_definition: PrimaryKeyDefinition,
+    ) -> Self {
+        BlockDirectory {
+            parent_table,
+            relationship_definition,
+            bucket_lock: Default::default(),
+            buckets: Default::default(),
+            bucket_size,
+            global_depth: 1,
+            directories: Default::default(),
+            mask: BigUint::one(),
+            primary_key_definition,
+            volatile: true,
         }
     }
 
@@ -172,11 +194,19 @@ impl BlockDirectory {
     fn create_new_bucket(&self, local_depth: usize) -> usize {
         let (mut buckets, _lock) = self.buckets_mut();
         let id = buckets.len();
-        let block = Block::new(
-            self.parent_table.clone(),
-            id,
-            self.relationship_definition.clone(),
-        );
+        let block = if self.volatile {
+            Block::new_unbacked(
+                self.parent_table.clone(),
+                id,
+                self.relationship_definition.clone(),
+            )
+        } else {
+            Block::new(
+                self.parent_table.clone(),
+                id,
+                self.relationship_definition.clone(),
+            )
+        };
         let bucket = Bucket {
             local_depth,
             block,
@@ -484,8 +514,8 @@ impl<'a> RepeatableBlockIterator<'a> {
     }
 }
 
-impl<'a> From<BlockIterator<'a>> for RepeatableBlockIterator<'a> {
-    fn from(i: BlockIterator<'a>) -> Self {
+impl<'a> From<&BlockIterator<'a>> for RepeatableBlockIterator<'a> {
+    fn from(i: &BlockIterator<'a>) -> Self {
         let BlockIterator {
             bucket_num,
             max_block_num,
@@ -493,11 +523,17 @@ impl<'a> From<BlockIterator<'a>> for RepeatableBlockIterator<'a> {
             read,
         } = i;
         Self {
-            bucket_num,
-            max_block_num,
-            directory,
-            read,
+            bucket_num: *bucket_num,
+            max_block_num: *max_block_num,
+            directory: *directory,
+            read: read.clone(),
         }
+    }
+}
+
+impl<'a> From<BlockIterator<'a>> for RepeatableBlockIterator<'a> {
+    fn from(i: BlockIterator<'a>) -> Self {
+        (&i).into()
     }
 }
 

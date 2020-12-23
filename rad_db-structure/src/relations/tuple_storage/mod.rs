@@ -71,6 +71,25 @@ impl TupleStorage {
         }
     }
 
+    pub fn new_volatile(
+        identifier: Identifier,
+        relation: RelationDefinition,
+        primary_key_definition: PrimaryKeyDefinition,
+        max_size: usize,
+    ) -> Self {
+        Self {
+            identifier: identifier.clone(),
+            relation: relation.clone(),
+            primary_key_definition: primary_key_definition.clone(),
+            true_storage: BlockDirectory::new_volatile(
+                identifier,
+                relation,
+                max_size,
+                primary_key_definition,
+            ),
+        }
+    }
+
     pub fn to_skeleton(&self) -> Self {
         Self::new(
             self.identifier.clone(),

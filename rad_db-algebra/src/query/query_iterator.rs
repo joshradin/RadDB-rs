@@ -1,49 +1,116 @@
-use rad_db_structure::relations::tuple_storage::TupleStorage;
-use rad_db_structure::tuple::Tuple;
+use std::borrow::Cow;
 use std::collections::VecDeque;
 
-#[derive(Debug)]
-pub struct QueryBuffer {
-    storage: VecDeque<Tuple>,
+use rad_db_structure::relations::tuple_storage::{BlockIterator, TupleStorage};
+use rad_db_structure::tuple::Tuple;
+
+use crate::query::query_result::{QueryResultBlocks, QueryResultFullData};
+use crate::query::Repeatable;
+
+pub struct QueryIterator<'a> {
+    backing: QueryResultFullData<'a>,
+    buffer: VecDeque<Tuple>,
 }
 
-impl QueryBuffer {
-    /// Creates a new buffer, with an optional max storage.
-    ///
-    /// # Warning
-    /// There is an implicit max storage of the max value of isize::MAX/std::mem::sizeof<usize>
-    pub fn new() -> Self {
-        QueryBuffer {
-            storage: VecDeque::new(),
+impl<'a> QueryIterator<'a> {
+    pub(crate) fn new(backing: QueryResultFullData<'a>) -> Self {
+        QueryIterator {
+            backing,
+            buffer: VecDeque::new(),
         }
     }
-
-    /// Attempts to push a tuple onto the buffer
-    ///
-    /// # Panic
-    /// Will panic if the buffer is full
-    pub fn push(&mut self, tuple: Tuple) {
-        self.storage.push_back(tuple)
-    }
-
-    /// Attempts to push a tuple onto the buffer
-    ///
-    /// # Panic
-    /// Will panic if the buffer becomes full and another tuples is attempted to be added
-    pub fn push_all<I: IntoIterator<Item = Tuple>>(&mut self, iterator: I) {
-        self.storage.extend(iterator)
-    }
-
-    /// Returns true if there isn't any tuples in the buffer
-    pub fn is_empty(&self) -> bool {
-        self.storage.is_empty()
-    }
 }
 
-impl Iterator for &mut QueryBuffer {
+impl Iterator for QueryIterator<'_> {
     type Item = Tuple;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.storage.pop_front()
+        if !self.buffer.is_empty() {
+            return self.buffer.pop_front();
+        }
+
+        match &mut self.backing {
+            QueryResultFullData::Tuples(tuples) => tuples.pop(),
+            QueryResultFullData::BlockData(blocks) => {
+                match blocks {
+                    QueryResultBlocks::Blocks(blocks) => {
+                        if let Some(tuples) = blocks.pop() {
+                            self.buffer.extend(tuples);
+                        }
+                    }
+                    QueryResultBlocks::Source(source) => {
+                        if let Some(tuples) = source.next() {
+                            self.buffer.extend(tuples);
+                        }
+                    }
+                }
+
+                self.buffer.pop_front()
+            }
+        }
+    }
+}
+
+pub struct ReferencedQueryIterator<'a> {
+    backing: &'a QueryResultFullData<'a>,
+    buffer: VecDeque<Tuple>,
+    blocks_count: usize,
+    block_iterator: Option<BlockIterator<'a>>,
+}
+
+impl<'a> ReferencedQueryIterator<'a> {
+    pub fn new(backing: &'a QueryResultFullData<'a>) -> Self {
+        ReferencedQueryIterator {
+            backing,
+            buffer: VecDeque::new(),
+            blocks_count: 0,
+            block_iterator: None,
+        }
+    }
+}
+
+impl Iterator for ReferencedQueryIterator<'_> {
+    type Item = Tuple;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if !self.buffer.is_empty() {
+            return self.buffer.pop_front();
+        }
+
+        if let Some(block_iterator) = &mut self.block_iterator {
+            let tuples: Option<Vec<Tuple>> = block_iterator.next();
+            if let Some(tuples) = tuples {
+                self.buffer.extend(tuples);
+            }
+            return self.buffer.pop_front();
+        }
+
+        match &mut self.backing {
+            QueryResultFullData::Tuples(tuples) => {
+                self.buffer.extend(tuples.into_iter().cloned());
+                self.buffer.pop_front()
+            }
+            QueryResultFullData::BlockData(blocks) => {
+                match blocks {
+                    QueryResultBlocks::Blocks(blocks) => {
+                        if let Some(tuples) = blocks.get(self.blocks_count) {
+                            self.buffer.extend(tuples.into_iter().cloned());
+                        }
+                        self.blocks_count += 1;
+                    }
+                    QueryResultBlocks::Source(source) => {
+                        let mut block_iterator: BlockIterator = source.get_iterator();
+                        let tuples: Option<Vec<Tuple>> = block_iterator.next();
+                        if let Some(tuples) = tuples {
+                            self.buffer.extend(tuples);
+                        }
+                        return self.buffer.pop_front();
+                        self.block_iterator = Some(block_iterator);
+                    }
+                }
+
+                self.buffer.pop_front()
+            }
+        }
     }
 }

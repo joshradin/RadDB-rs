@@ -5,6 +5,7 @@ use chrono::{Date, DateTime, Local, Utc};
 use std::cmp::min;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
+use std::convert::TryFrom;
 
 pub mod deserialization;
 pub mod serialization;
@@ -367,6 +368,21 @@ impl Into<u64> for Unsigned {
             Unsigned::Short(s) => s as u64,
             Unsigned::Int(i) => i as u64,
             Unsigned::Long(u) => u,
+        }
+    }
+}
+
+impl TryFrom<Value> for u64 {
+    type Error = Value;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Numeric(
+                Numeric::Unsigned(
+                    Unsigned::Long(u)
+                )
+            ) => Ok(u),
+            v => Err(v)
         }
     }
 }

@@ -1,41 +1,52 @@
+use crate::query::query_iterator::{QueryIterator, ReferencedQueryIterator};
+use crate::query::query_node::Source;
 use crate::query::Repeatable;
 use rad_db_structure::identifier::Identifier;
+use rad_db_structure::relations::tuple_storage::BlockIterator;
 use rad_db_structure::relations::RelationDefinition;
 use rad_db_structure::tuple::Tuple;
 use rad_db_types::{Type, Value};
 use std::collections::HashMap;
 use std::iter::FromIterator;
+use std::marker::PhantomData;
 
-enum InternalIterator {
-    Tuple(Box<dyn Iterator<Item = Tuple>>),
-    Block(Box<dyn Iterator<Item = Vec<Tuple>>>),
-    RepeatableTuple(Box<dyn Repeatable<Item = Tuple>>),
-    RepeatableBlock(Box<dyn Repeatable<Item = Vec<Tuple>>>),
+pub enum QueryResultFullData<'a> {
+    Tuples(Vec<Tuple>),
+    BlockData(QueryResultBlocks<'a>),
 }
 
-pub struct QueryResult {
+pub enum QueryResultBlocks<'a> {
+    Blocks(Vec<Vec<Tuple>>),
+    Source(Source<'a>),
+}
+
+pub struct QueryResult<'a> {
     relation: Vec<(Identifier, Type)>,
-    internal: InternalIterator,
+    internal: QueryResultFullData<'a>,
+    total_created_tuples: usize,
 }
 const ITEMS_PER_BLOCK: usize = 16;
-impl QueryResult {
-    pub fn with_tuples<I: IntoIterator<Item = Tuple> + 'static>(
+impl<'a> QueryResult<'a> {
+    pub fn with_tuples<I: IntoIterator<Item = Tuple>>(
         relation: Vec<(Identifier, Type)>,
         tuples: I,
+        extra: usize,
     ) -> Self {
+        let vec: Vec<_> = tuples.into_iter().collect();
+        let len = vec.len();
         QueryResult {
             relation,
-            internal: InternalIterator::Tuple(Box::new(tuples.into_iter())),
+            internal: QueryResultFullData::Tuples(vec),
+            total_created_tuples: len + extra,
         }
     }
 
-    pub fn with_blocks<I: IntoIterator<Item = Vec<Tuple>> + 'static>(
-        relation: Vec<(Identifier, Type)>,
-        tuples: I,
-    ) -> Self {
+    pub fn from_source(relation: Vec<(Identifier, Type)>, source: Source<'a>) -> Self {
+        let len = source.source_len();
         QueryResult {
             relation,
-            internal: InternalIterator::Block(Box::new(tuples.into_iter())),
+            internal: QueryResultFullData::BlockData(QueryResultBlocks::Source(source)),
+            total_created_tuples: len,
         }
     }
 
@@ -44,35 +55,41 @@ impl QueryResult {
     }
 
     /// Converts the result into an iterator of tuples
-    pub fn tuples(self) -> Box<dyn Iterator<Item = Tuple>> {
-        match self.internal {
-            InternalIterator::Tuple(i) => Box::new(i),
-            InternalIterator::Block(i) => Box::new(i.flatten()),
-            InternalIterator::RepeatableTuple(i) => i.get_iterator(),
-            InternalIterator::RepeatableBlock(i) => Box::new(i.get_iterator().flatten()),
-        }
+    pub fn tuples(self) -> QueryResultFullData<'a> {
+        self.internal
     }
 
     /// Attempts to get an iterator of tuples without consuming itself
-    pub fn repeatable_tuples(&self) -> Option<Box<dyn Iterator<Item = Tuple>>> {
-        match &self.internal {
-            InternalIterator::Tuple(_) | InternalIterator::Block(_) => None,
-            InternalIterator::RepeatableTuple(i) => Some(i.get_iterator()),
-            InternalIterator::RepeatableBlock(i) => Some(Box::new(i.get_iterator().flatten())),
+    pub fn repeatable_tuples(&mut self) -> impl Iterator<Item = Tuple> {
+        if let QueryResultFullData::BlockData(_) = &self.internal {
+            let old = std::mem::replace(&mut self.internal, QueryResultFullData::Tuples(vec![]));
+
+            if let QueryResultFullData::BlockData(source) = old {
+                if let QueryResultFullData::Tuples(new_vec) = &mut self.internal {
+                    for tuple in source.into_iter().flatten() {
+                        new_vec.push(tuple);
+                    }
+                }
+            }
+        }
+
+        if let QueryResultFullData::Tuples(vector) = &self.internal {
+            vector.clone().into_iter()
+        } else {
+            unreachable!()
         }
     }
 
     /// Converts the result into an iterator of blocks of tuples
-    pub fn blocks(self) -> Box<dyn Iterator<Item = Vec<Tuple>>> {
+    pub fn blocks(self) -> QueryResultBlocks<'a> {
         match self.internal {
-            InternalIterator::Tuple(i) => {
+            QueryResultFullData::Tuples(s) => {
                 let mut ret = Vec::new();
-                let collected = i.collect::<Vec<_>>();
                 let mut current = Vec::new();
 
-                let mut iterator = collected.into_iter();
+                let mut iterator = s.into_iter();
                 while let Some(tuple) = iterator.next() {
-                    current.push(tuple);
+                    current.push(tuple.clone());
                     if current.len() >= ITEMS_PER_BLOCK {
                         ret.push(current);
                         current = vec![];
@@ -81,63 +98,29 @@ impl QueryResult {
                 if !current.is_empty() {
                     ret.push(current);
                 }
-                Box::new(ret.into_iter())
+                QueryResultBlocks::Blocks(ret)
             }
-            InternalIterator::Block(i) => Box::new(i.into_iter()),
-            InternalIterator::RepeatableTuple(i) => {
-                let mut ret = Vec::new();
-                let collected = i.get_iterator().collect::<Vec<_>>();
-                let mut current = Vec::new();
-
-                let mut iterator = collected.into_iter();
-                while let Some(tuple) = iterator.next() {
-                    current.push(tuple);
-                    if current.len() >= ITEMS_PER_BLOCK {
-                        ret.push(current);
-                        current = vec![];
-                    }
-                }
-                if !current.is_empty() {
-                    ret.push(current);
-                }
-                Box::new(ret.into_iter())
-            }
-            InternalIterator::RepeatableBlock(i) => i.get_iterator(),
+            QueryResultFullData::BlockData(b) => b,
         }
     }
 
     /// Tries to get an iterator of blocks of tuples without consuming the result
-    pub fn repeatable_blocks(&self) -> Option<Box<dyn Iterator<Item = Vec<Tuple>>>> {
+    pub fn repeatable_blocks(&self) -> Option<BlockIterator> {
         match &self.internal {
-            InternalIterator::Tuple(_) | InternalIterator::Block(_) => None,
-            InternalIterator::RepeatableTuple(i) => {
-                let mut ret = Vec::new();
-                let collected = i.get_iterator().collect::<Vec<_>>();
-                let mut current = Vec::new();
-
-                let mut iterator = collected.into_iter();
-                while let Some(tuple) = iterator.next() {
-                    current.push(tuple);
-                    if current.len() >= ITEMS_PER_BLOCK {
-                        ret.push(current);
-                        current = vec![];
-                    }
-                }
-                if !current.is_empty() {
-                    ret.push(current);
-                }
-                Some(Box::new(ret.into_iter()))
-            }
-            InternalIterator::RepeatableBlock(i) => Some(i.get_iterator()),
+            QueryResultFullData::BlockData(b) => match b {
+                QueryResultBlocks::Blocks(_) => None,
+                QueryResultBlocks::Source(s) => Some(s.get_iterator()),
+            },
+            _ => None,
         }
     }
 
     /// Gets the index in a tuple of this identifier
-    pub(crate) fn get_value_in_tuple<'a>(
+    pub(crate) fn get_value_in_tuple<'b>(
         &self,
         id: &Identifier,
-        tuple: &'a Tuple,
-    ) -> Option<&'a Value> {
+        tuple: &'b Tuple,
+    ) -> Option<&'b Value> {
         let position = self.relation.iter().position(|(rel_id, _)| rel_id == id);
         match position {
             None => None,
@@ -153,48 +136,46 @@ impl QueryResult {
             .map(|(index, id)| (id.0.clone(), index))
             .collect()
     }
-}
 
-impl IntoIterator for QueryResult {
-    type Item = Tuple;
-    type IntoIter = <Vec<Tuple> as IntoIterator>::IntoIter;
-
-    fn into_iter(self) -> Self::IntoIter {
-        Vec::from_iter(self.tuples()).into_iter()
+    pub fn total_created_tuples(&self) -> usize {
+        self.total_created_tuples
     }
 }
 
-impl IntoIterator for &mut QueryResult {
-    type Item = Tuple;
-    type IntoIter = <Vec<Tuple> as IntoIterator>::IntoIter;
+impl<'a> Iterator for QueryResultBlocks<'a> {
+    type Item = Vec<Tuple>;
 
-    /// If the iterator is not naturally repeatable, this can be very expensive
-    fn into_iter(self) -> Self::IntoIter {
-        if let Some(repeatable) = self.repeatable_tuples() {
-            let ret: Vec<_> = repeatable.collect();
-            ret.into_iter()
-        } else {
-            // Expensive operation
-            match &mut self.internal {
-                InternalIterator::Tuple(tuples) => {
-                    let mut replaced =
-                        std::mem::replace(tuples, Box::new(Vec::<Tuple>::new().into_iter()));
-                    let saved_tuples: Vec<_> = replaced.collect();
-                    let output: Vec<_> = saved_tuples.iter().cloned().collect();
-                    std::mem::replace(tuples, Box::new(saved_tuples.into_iter()));
-                    output.into_iter()
-                }
-                InternalIterator::Block(tuples) => {
-                    let mut replaced =
-                        std::mem::replace(tuples, Box::new(Vec::<Vec<Tuple>>::new().into_iter()));
-                    let saved_tuples: Vec<_> = replaced.collect();
-                    let output: Vec<_> = saved_tuples.iter().cloned().collect();
-                    std::mem::replace(tuples, Box::new(saved_tuples.into_iter()));
-                    let flattened: Vec<_> = output.into_iter().flatten().collect();
-                    flattened.into_iter()
-                }
-                _ => unreachable!(),
-            }
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            QueryResultBlocks::Blocks(blocks) => blocks.pop(),
+            QueryResultBlocks::Source(source) => source.next(),
         }
+    }
+}
+
+impl<'a> IntoIterator for QueryResultFullData<'a> {
+    type Item = Tuple;
+    type IntoIter = QueryIterator<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        QueryIterator::new(self)
+    }
+}
+
+impl<'a> IntoIterator for QueryResult<'a> {
+    type Item = Tuple;
+    type IntoIter = QueryIterator<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        QueryIterator::new(self.internal)
+    }
+}
+
+impl<'a> IntoIterator for &'a QueryResult<'a> {
+    type Item = Tuple;
+    type IntoIter = ReferencedQueryIterator<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        ReferencedQueryIterator::new(&self.internal)
     }
 }

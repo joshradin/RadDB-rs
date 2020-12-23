@@ -21,6 +21,7 @@ pub struct Relation {
 }
 
 impl Relation {
+    /// Creates a new relation that will save it's contents into the file system
     pub fn new<S: ToString, I: IntoIterator<Item = (S, Type)>>(
         name: Identifier,
         attributes: I,
@@ -39,6 +40,33 @@ impl Relation {
         let definition = RelationDefinition::new(definition);
         let backing_table =
             Relation::generate_tuple_storage(&name, bucket_size, &primary_key, definition);
+        Relation {
+            name,
+            attributes,
+            primary_key,
+            backing_table,
+        }
+    }
+
+    /// Creates a relation that only lasts for as long as the program runs
+    pub fn new_volatile<S: ToString, I: IntoIterator<Item = (S, Type)>>(
+        name: Identifier,
+        attributes: I,
+        bucket_size: usize,
+        primary_key: PrimaryKeyDefinition,
+    ) -> Self {
+        let attributes: Vec<(String, Type)> = attributes
+            .into_iter()
+            .map(|(s, ty)| (s.to_string(), ty))
+            .collect();
+        let definition: Vec<_> = attributes
+            .clone()
+            .into_iter()
+            .map(|(string, ty)| (Identifier::with_parent(&name, string), ty))
+            .collect();
+        let definition = RelationDefinition::new(definition);
+        let backing_table =
+            TupleStorage::new_volatile(name.clone(), definition,primary_key.clone(), bucket_size);
         Relation {
             name,
             attributes,
@@ -113,6 +141,10 @@ impl Relation {
     /// file system after the relation drops
     pub fn into_temp(self) -> TempRelation {
         TempRelation::new(self)
+    }
+
+    pub fn insert(&mut self, tuple: Tuple) {
+        self.backing_table.insert(tuple);
     }
 }
 

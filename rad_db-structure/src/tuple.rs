@@ -13,7 +13,7 @@ use std::cmp::Reverse;
 
 /// Represents a single row within a database.
 /// A tuple knows no information about itself besides its contents
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Tuple(Vec<Type>);
 
 impl Tuple {

@@ -1,6 +1,7 @@
 use crate::query::conditions::JoinCondition;
-use crate::query::query_iterator::QueryBuffer;
+use crate::query::query_iterator::QueryIterator;
 use crate::query::query_result::QueryResult;
+use crate::query::Repeatable;
 use rad_db_structure::identifier::Identifier;
 use rad_db_structure::relations::tuple_storage::{BlockIterator, StoredTupleIterator};
 use rad_db_structure::relations::Relation;
@@ -42,6 +43,27 @@ impl<'a> Iterator for Crawler<'a> {
 pub enum Source<'a> {
     Flat(Crawler<'a>),
     Renamed(Crawler<'a>, String),
+}
+
+impl<'a> Source<'a> {
+    pub fn source_len(&self) -> usize {
+        match self {
+            Source::Flat(c) => c.source.len(),
+            Source::Renamed(c, _) => c.source.len(),
+        }
+    }
+}
+
+impl<'a> Repeatable for Source<'a> {
+    type Item = Vec<Tuple>;
+    type IntoIter = BlockIterator<'a>;
+
+    fn get_iterator(&self) -> Self::IntoIter {
+        match self {
+            Source::Flat(c) => c.source.blocks(),
+            Source::Renamed(c, _) => c.source.blocks(),
+        }
+    }
 }
 
 impl Iterator for Source<'_> {
@@ -140,6 +162,23 @@ impl<'a> QueryNode<'a> {
         }
     }
 
+    pub fn cross_product(left: QueryNode<'a>, right: QueryNode<'a>) -> Self {
+        let mut result = Vec::new();
+        result.extend(left.resulting_relation.iter().cloned());
+        result.extend(right.resulting_relation.iter().cloned());
+        let mapping = result
+            .iter()
+            .map(|(id, _)| (id.clone(), id.clone()))
+            .collect();
+
+        QueryNode {
+            query: Query::CrossProduct,
+            children: Box::new(QueryChildren::Two(left, right)),
+            resulting_relation: result,
+            mapping: mapping,
+        }
+    }
+
     pub fn optimize_query(&mut self) {}
 
     pub fn optimized(mut self) -> Self {
@@ -147,16 +186,27 @@ impl<'a> QueryNode<'a> {
         self
     }
 
-    pub fn execute_query(self) -> QueryResult {
+    pub fn execute_query<'q>(self) -> QueryResult<'q>
+    where
+        'a: 'q,
+    {
         let mut output_tuples: Vec<Tuple> = vec![];
         let relation = self.resulting_relation.clone();
+        let mut extra = 0;
+
         match (self.query, *self.children) {
+            (Query::Source(source), QueryChildren::None) => {
+                let inner = QueryResult::from_source(relation, source);
+                return inner;
+            }
             (Query::InnerJoin(join), QueryChildren::Two(left, right)) => {
                 let left_id = &self.mapping[join.left_id()]; // the name of the left id in the left result
                 let right_id = &self.mapping[join.right_id()]; // the name of the right id in the right result
 
                 let left = left.execute_query();
                 let right = right.execute_query();
+
+                extra += left.total_created_tuples() + right.total_created_tuples();
 
                 let left_mappings = left.identifier_mappings();
                 let right_mappings = right.identifier_mappings();
@@ -181,7 +231,7 @@ impl<'a> QueryNode<'a> {
                 } else {
                     let mut right = right;
                     for left_tuple in left {
-                        for right_tuple in &mut right {
+                        for right_tuple in &right {
                             if left_tuple[left_index] == right_tuple[right_index] {
                                 output_tuples.push(&left_tuple + right_tuple);
                             }
@@ -192,6 +242,9 @@ impl<'a> QueryNode<'a> {
             (Query::CrossProduct, QueryChildren::Two(left, right)) => {
                 let left = left.execute_query();
                 let right = right.execute_query();
+
+                extra += left.total_created_tuples() + right.total_created_tuples();
+
                 if right.repeatable_blocks().is_some() {
                     let left_blocks = left.blocks();
                     for left_block in left_blocks {
@@ -207,7 +260,7 @@ impl<'a> QueryNode<'a> {
                 } else {
                     let mut right = right;
                     for left_tuple in left {
-                        for right_tuple in &mut right {
+                        for right_tuple in &right {
                             output_tuples.push(&left_tuple + right_tuple);
                         }
                     }
@@ -216,6 +269,49 @@ impl<'a> QueryNode<'a> {
             _ => panic!("Invalid query"),
         }
 
-        QueryResult::with_tuples(relation, output_tuples)
+        QueryResult::with_tuples(relation, &mut output_tuples.into_iter(), extra)
+    }
+}
+
+#[cfg(test)]
+mod join_tests {
+    use super::*;
+    use rad_db_structure::key::primary::PrimaryKeyDefinition;
+    use rad_db_structure::relations::Relation;
+    use std::iter::FromIterator;
+
+    #[test]
+    fn cross_product() {
+        let mut relation1 = Relation::new_volatile(
+            Identifier::new("test1"),
+            vec![("field1", Type::from(0u64))],
+            64,
+            PrimaryKeyDefinition::new(vec![0]),
+        );
+        for i in 0..100u64 {
+            //println!("Inserting tuple {}", i);
+            relation1.insert(Tuple::from_iter(&[Value::from(i)]));
+        }
+        let mut relation2 = Relation::new_volatile(
+            Identifier::new("test2"),
+            vec![("field1", Type::from(0u64))],
+            64,
+            PrimaryKeyDefinition::new(vec![0]),
+        );
+        for i in 0..100u64 {
+            //println!("Inserting tuple {}", i);
+            relation2.insert(Tuple::from_iter(&[Value::from(i)]));
+        }
+
+        let mut query_node =
+            QueryNode::cross_product(QueryNode::source(&relation1), QueryNode::source(&relation2));
+        let result = query_node.execute_query();
+        let resulting_tuples: Vec<Tuple> = result.tuples().into_iter().collect();
+        assert_eq!(resulting_tuples.len(), 100 * 100);
+        for i in 0..100u64 {
+            for j in 0..100u64 {
+                resulting_tuples.contains(&Tuple::from_iter(&[Value::from(i), Value::from(j)]));
+            }
+        }
     }
 }

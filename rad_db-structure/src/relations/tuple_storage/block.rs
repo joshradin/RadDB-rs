@@ -44,17 +44,13 @@ pub struct Block {
     len: usize,
     usage: RwLock<()>,
     reads: AtomicUsize,
+    no_backing_file: bool,
     access_info: RwLock<AccessInformation>,
     load_block: AtomicBool,
 }
 
 impl Block {
     pub fn len(&self) -> usize {
-        /*
-        let contents = self.get_contents();
-        contents.internal.len()
-
-         */
         self.len
     }
 }
@@ -107,10 +103,37 @@ impl Block {
             len: 0,
             usage: RwLock::new(()),
             reads: Default::default(),
+            no_backing_file: false,
             access_info: Default::default(),
             load_block: Default::default(),
         };
         ret.initialize_file().unwrap();
+        ret
+    }
+
+    /// Creates a block that never saved to a file
+    pub fn new_unbacked(
+        parent_table: Identifier,
+        block_num: usize,
+        relationship_definition: RelationDefinition,
+    ) -> Self {
+        let mut ret = Block {
+            parent_table,
+            relationship_definition,
+            block_num,
+            block_contents: None,
+            len: 0,
+            usage: RwLock::new(()),
+            reads: Default::default(),
+            no_backing_file: true,
+            access_info: Default::default(),
+            load_block: Default::default(),
+        };
+        ret.block_contents = Some(BlockContents {
+            relationship: ret.relationship_definition.clone(),
+            file: None,
+            internal: vec![],
+        });
         ret
     }
 
@@ -209,6 +232,9 @@ impl Block {
     unsafe fn load(&self) {
         //println!("Loading Block {}", self.block_num);
         while self.load_block.load(Ordering::Relaxed) {}
+        if self.no_backing_file {
+            return;
+        }
         let path = self.file_name();
         let file = OpenOptions::new()
             .write(true)
@@ -245,7 +271,7 @@ impl Block {
 
         let contents = BlockContents {
             relationship: self.relationship_definition.clone(),
-            file,
+            file: Some(file),
             internal: tuples,
         };
         unsafe {
@@ -257,6 +283,10 @@ impl Block {
 
     unsafe fn unload(&self) {
         //println!("Flushing Block {}", self.block_num);
+        if self.no_backing_file {
+            return;
+        }
+
         let unsafe_self = self as *const Self as *mut Self;
         while self
             .load_block
@@ -443,7 +473,7 @@ impl DerefMut for InUseMut<'_> {
 
 pub struct BlockContents {
     relationship: RelationDefinition,
-    file: File,
+    file: Option<File>,
     internal: Vec<(BigUint, Tuple)>,
 }
 
