@@ -38,6 +38,25 @@ pub enum ConditionOperation {
     Or(Box<ConditionOperation>, Box<Condition>),
 }
 
+macro_rules! min_float {
+    ($x:expr) => {
+        $x
+    };
+    ($x:expr, $($rest:expr),+) => {
+        {
+            let temp = min_float!($($rest),*);
+            if $x < temp {
+                $x
+            } else {
+                temp
+            }
+        }
+    };
+    ($($x:expr),+,) => {
+        min_float!($($x),*)
+    };
+}
+
 impl ConditionOperation {
     fn selectivity(&self, max_tuples: usize) -> f64 {
         match self {
@@ -45,7 +64,7 @@ impl ConditionOperation {
             ConditionOperation::Nequals(_) => 1.0 - 1.0 / max_tuples as f64,
             ConditionOperation::And(c, r) => c.selectivity(max_tuples) * r.selectivity(max_tuples),
             ConditionOperation::Or(c, r) => {
-                min(c.selectivity(max_tuples) + r.selectivity(max_tuples), 1.0)
+                min_float!(c.selectivity(max_tuples) + r.selectivity(max_tuples), 1.0)
             }
         }
     }

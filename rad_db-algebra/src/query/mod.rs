@@ -5,6 +5,7 @@ pub mod conditions;
 pub mod query_iterator;
 pub mod query_node;
 pub mod query_result;
+pub mod optimization;
 
 /// An object that can be turned into an iterator multiple times
 pub trait Repeatable {

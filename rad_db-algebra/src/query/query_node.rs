@@ -1,4 +1,4 @@
-use crate::query::conditions::{JoinCondition, Condition};
+use crate::query::conditions::{JoinCondition, Condition, Operand, ConditionOperation};
 use crate::query::query_iterator::QueryIterator;
 use crate::query::query_result::QueryResult;
 use crate::query::Repeatable;
@@ -8,6 +8,8 @@ use rad_db_structure::relations::Relation;
 use rad_db_structure::tuple::Tuple;
 use rad_db_types::{Type, Value};
 use std::collections::HashMap;
+use std::cmp::max;
+use crate::query::optimization::Optimizer;
 
 pub enum Projection {
     Flat(Identifier),
@@ -179,7 +181,25 @@ impl<'a> QueryNode<'a> {
         }
     }
 
-    pub fn optimize_query(&mut self) {}
+    pub fn select_on_condition(node: QueryNode<'a>, condition: Condition) -> Self {
+        let vec = node.resulting_relation.clone();
+        let map = node.mapping.clone();
+        Self {
+            query: Query::Selection(condition),
+            children: Box::new(QueryChildren::One(node)),
+            resulting_relation: vec,
+            mapping: map,
+        }
+    }
+
+    pub fn select_eq(node: QueryNode<'a>, id: Identifier, eq: Operand) -> Self {
+        Self::select_on_condition(node ,Condition::new(id, ConditionOperation::Equals(eq)))
+    }
+
+    pub fn optimize_query(&mut self) {
+        let optimizer = Optimizer::new(self);
+        optimizer.optimize();
+    }
 
     pub fn optimized(mut self) -> Self {
         self.optimize_query();
@@ -270,6 +290,63 @@ impl<'a> QueryNode<'a> {
         }
 
         QueryResult::with_tuples(relation, &mut output_tuples.into_iter(), extra)
+    }
+
+    pub fn approximate_created_tuples(&self) -> usize {
+        match &self.query {
+            Query::Source(s) => {
+                s.source_len()
+            }
+            Query::Projection(_) => {
+                if let QueryChildren::One(child) = &*self.children {
+                    child.approximate_created_tuples()
+                } else {
+                    panic!("Invalid query")
+                }
+            }
+            Query::Selection(c) => {
+                if let QueryChildren::One(child) = &*self.children {
+                    c.selectivity(child.approximate_created_tuples()) as usize
+                } else {
+                    panic!("Invalid query")
+                }
+            }
+            Query::CrossProduct => {
+                if let QueryChildren::Two(l, r) = &*self.children {
+                    l.approximate_created_tuples() * r.approximate_created_tuples()
+                } else {
+                    panic!("Invalid query")
+                }
+            }
+            Query::InnerJoin(_) => {
+                if let QueryChildren::Two(l, r) = &*self.children {
+                    max(l.approximate_created_tuples(), r.approximate_created_tuples())
+                } else {
+                    panic!("Invalid query")
+                }
+            }
+            Query::LeftJoin(_) => {
+                if let QueryChildren::Two(l, r) = &*self.children {
+                    l.approximate_created_tuples() * r.approximate_created_tuples()
+                } else {
+                    panic!("Invalid query")
+                }
+            }
+            Query::RightJoin(_) => {
+                if let QueryChildren::Two(l, r) = &*self.children {
+                    l.approximate_created_tuples() * r.approximate_created_tuples()
+                } else {
+                    panic!("Invalid query")
+                }
+            }
+            Query::NaturalJoin => {
+                if let QueryChildren::Two(l, r) = &*self.children {
+                    max(l.approximate_created_tuples(), r.approximate_created_tuples())
+                } else {
+                    panic!("Invalid query")
+                }
+            }
+        }
     }
 }
 
