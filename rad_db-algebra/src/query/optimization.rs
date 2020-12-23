@@ -296,8 +296,21 @@ where
 
                 let child = projection.children()[0];
                 let join_children = child.children();
-                let left = join_condition[0];
-                let right = join_condition[1];
+                let left = join_children[0];
+                let right = join_children[1];
+
+                for id in projections {
+                    let query = projection.find_node_with_field(id).unwrap();
+                    if left.is_parent_or_self(query) {
+                        left_fields.push(id.clone())
+                    } else if right.is_parent_or_self(query) {
+                        right_fields.push(id.clone())
+                    }
+                }
+
+                if left_fields.contains(join_condition.left_id())
+                    && right_fields.contains(join_condition.right_id())
+                {}
             }
         }
     }

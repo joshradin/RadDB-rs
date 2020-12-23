@@ -14,12 +14,6 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 
 #[derive(Clone)]
-pub enum Projection {
-    Flat(Identifier),
-    Renamed(Identifier, String),
-}
-
-#[derive(Clone)]
 pub struct Crawler<'a> {
     source: MappedRelation<'a>,
     iterator: Option<BlockIterator<'a>>,
@@ -87,7 +81,7 @@ impl Iterator for Source<'_> {
 #[derive(Clone)]
 pub enum Query<'a> {
     Source(Source<'a>),
-    Projection(Vec<Projection>),
+    Projection(Vec<Identifier>),
     Selection(Condition),
     CrossProduct,
     InnerJoin(JoinCondition),
