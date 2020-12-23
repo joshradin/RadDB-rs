@@ -158,15 +158,15 @@ impl Display for Identifier {
     }
 }
 
-impl<S: AsRef<str>> From<S> for Identifier {
-    fn from(str: S) -> Self {
-        Identifier::new(str)
+impl From<&str> for Identifier {
+    fn from(string: &str) -> Self {
+        Identifier::new(string)
     }
 }
 
-impl From<&Identifier> for Identifier {
-    fn from(i: &Identifier) -> Self {
-        i.clone()
+impl From<String> for Identifier {
+    fn from(string: String) -> Self {
+        Identifier::new(string)
     }
 }
 
@@ -177,6 +177,12 @@ impl From<&Identifier> for PathBuf {
             ret.push(str);
         }
         ret
+    }
+}
+
+impl<I : Into<Identifier> + ToOwned<Owned=I>> From<&I> for Identifier {
+    fn from(id: &I) -> Self {
+        id.to_owned().into()
     }
 }
 

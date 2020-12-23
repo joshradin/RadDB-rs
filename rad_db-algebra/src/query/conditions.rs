@@ -1,8 +1,9 @@
 use rad_db_structure::identifier::Identifier;
 use rad_db_types::Value;
 use std::cmp::min;
+use crate::query::query_node::QueryNode;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct JoinCondition {
     left_id: Identifier,
     right_id: Identifier,
@@ -59,13 +60,24 @@ macro_rules! min_float {
 
 impl ConditionOperation {
     fn selectivity(&self, max_tuples: usize) -> f64 {
-        match self {
+        let ret = match self {
             ConditionOperation::Equals(_) => 1.0 / max_tuples as f64,
             ConditionOperation::Nequals(_) => 1.0 - 1.0 / max_tuples as f64,
-            ConditionOperation::And(c, r) => c.selectivity(max_tuples) * r.selectivity(max_tuples),
+            ConditionOperation::And(c, r) => {
+                c.selectivity(max_tuples) * r.selectivity(max_tuples)
+            },
             ConditionOperation::Or(c, r) => {
                 min_float!(c.selectivity(max_tuples) + r.selectivity(max_tuples), 1.0)
             }
+        };
+        if ret.is_infinite() {
+            if ret.is_sign_positive() {
+                1.0
+            } else {
+                0.0
+            }
+        } else {
+            ret
         }
     }
 }
@@ -122,6 +134,8 @@ impl<I: Into<Identifier>> From<I> for Operand {
         Operand::Id(s.into())
     }
 }
+
+
 
 #[cfg(test)]
 mod tests {

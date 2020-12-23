@@ -9,3 +9,4 @@ edition = "2018"
 [dependencies]
 rad_db-types = { path = "../rad_db-types"}
 rad_db-structure = { path = "../rad_db-structure"}
+rand = "0.8"

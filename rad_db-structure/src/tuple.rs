@@ -27,15 +27,24 @@ impl Tuple {
         Self(backing)
     }
 
-    pub fn remove_at_indexes<I: IntoIterator<Item = usize>>(self, indexes: I) -> Self {
+    /// Creates a new tuple from the indexes provided and an old tuple
+    pub fn take_from_indexes<I: IntoIterator<Item = usize>>(self, indexes: I) -> Self {
         let mut removal: Vec<usize> = indexes.into_iter().collect();
         removal.sort_by_key(|u| Reverse(*u));
         let mut values = self.0;
         for remove in removal {
+
             values.remove(remove);
         }
         Tuple(values)
     }
+
+    /// Takes a single value out of the tuple
+    pub fn take(mut self, index: usize) -> Value {
+        self.remove(index)
+    }
+
+
 }
 
 impl Deref for Tuple {

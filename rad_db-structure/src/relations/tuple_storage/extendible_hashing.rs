@@ -447,6 +447,7 @@ impl BlockDirectory {
 /// An iterator that goes through each block of the relation at a time. It _doesn't_ load every block
 /// into memory, and only does when the block is needed. Writes can not be made to the relation until
 /// after the iterator is dropped.
+#[derive(Clone)]
 pub struct BlockIterator<'a> {
     bucket_num: usize,
     max_block_num: usize,
@@ -595,6 +596,14 @@ impl<'a> Iterator for StoredTupleIterator<'a> {
         }
         self.buffer.pop_front()
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.directory.len(), Some(self.directory.len()))
+    }
+}
+
+impl <'a> ExactSizeIterator for StoredTupleIterator<'a> {
+
 }
 
 impl<'a> IntoIterator for &'a BlockDirectory {

@@ -7,22 +7,26 @@ use rad_db_structure::relations::tuple_storage::{BlockIterator, StoredTupleItera
 use rad_db_structure::relations::Relation;
 use rad_db_structure::tuple::Tuple;
 use rad_db_types::{Type, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::cmp::max;
 use crate::query::optimization::Optimizer;
+use crate::relation_mapping::MappedRelation;
+use std::ops::Deref;
 
+#[derive(Clone)]
 pub enum Projection {
     Flat(Identifier),
     Renamed(Identifier, String),
 }
 
+#[derive(Clone)]
 pub struct Crawler<'a> {
-    source: &'a Relation,
+    source: MappedRelation<'a>,
     iterator: Option<BlockIterator<'a>>,
 }
 
 impl<'a> Crawler<'a> {
-    pub fn new(source: &'a Relation) -> Self {
+    pub fn new(source: MappedRelation<'a>) -> Self {
         Crawler {
             source,
             iterator: None,
@@ -35,24 +39,31 @@ impl<'a> Iterator for Crawler<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.iterator.is_none() {
-            self.iterator = Some(self.source.blocks());
+            self.iterator = Some(self.source.relation().blocks());
         }
 
         self.iterator.as_mut().unwrap().next()
     }
 }
 
-pub enum Source<'a> {
-    Flat(Crawler<'a>),
-    Renamed(Crawler<'a>, String),
+#[derive(Clone)]
+pub struct Source<'a>(Crawler<'a>);
+
+impl<'a> Deref for Source<'a> {
+    type Target = Crawler<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl<'a> Source<'a> {
     pub fn source_len(&self) -> usize {
-        match self {
-            Source::Flat(c) => c.source.len(),
-            Source::Renamed(c, _) => c.source.len(),
-        }
+        self.source.relation().len()
+    }
+
+    pub fn relation(&self) -> &'a Relation {
+        self.source.relation()
     }
 }
 
@@ -61,10 +72,7 @@ impl<'a> Repeatable for Source<'a> {
     type IntoIter = BlockIterator<'a>;
 
     fn get_iterator(&self) -> Self::IntoIter {
-        match self {
-            Source::Flat(c) => c.source.blocks(),
-            Source::Renamed(c, _) => c.source.blocks(),
-        }
+        self.source.relation().blocks()
     }
 }
 
@@ -72,13 +80,11 @@ impl Iterator for Source<'_> {
     type Item = Vec<Tuple>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Source::Flat(c) => c.next(),
-            Source::Renamed(c, _) => c.next(),
-        }
+        self.0.next()
     }
 }
 
+#[derive(Clone)]
 pub enum Query<'a> {
     Source(Source<'a>),
     Projection(Vec<Projection>),
@@ -90,12 +96,14 @@ pub enum Query<'a> {
     NaturalJoin,
 }
 
+#[derive(Clone)]
 pub enum QueryChildren<'a> {
     None,
     One(QueryNode<'a>),
     Two(QueryNode<'a>, QueryNode<'a>),
 }
 
+#[derive(Clone)]
 pub struct QueryNode<'a> {
     query: Query<'a>,
     children: Box<QueryChildren<'a>>,
@@ -103,8 +111,16 @@ pub struct QueryNode<'a> {
     mapping: HashMap<Identifier, Identifier>,
 }
 
+impl<'a> PartialEq<&QueryNode<'a>> for &QueryNode<'a> {
+    fn eq(&self, other: &&QueryNode<'a>) -> bool {
+        *other as *const QueryNode<'a>
+            == *self as *const QueryNode<'a>
+    }
+}
+
 impl<'a> QueryNode<'a> {
     pub fn source(relation: &'a Relation) -> Self {
+        let mapped_relation = MappedRelation::new(relation);
         let mapping = relation
             .attributes()
             .iter()
@@ -114,7 +130,7 @@ impl<'a> QueryNode<'a> {
             })
             .collect();
         Self {
-            query: Query::Source(Source::Flat(Crawler::new(relation))),
+            query: Query::Source(Source(Crawler::new(mapped_relation))),
             children: Box::new(QueryChildren::None),
             resulting_relation: relation
                 .attributes()
@@ -126,6 +142,7 @@ impl<'a> QueryNode<'a> {
     }
 
     pub fn source_with_name(relation: &'a Relation, name: String) -> Self {
+        let mapped_relation = MappedRelation::new(relation).alias_relation(name.clone());
         let mapping = relation
             .attributes()
             .iter()
@@ -136,7 +153,7 @@ impl<'a> QueryNode<'a> {
             })
             .collect();
         Self {
-            query: Query::Source(Source::Renamed(Crawler::new(relation), name.clone())),
+            query: Query::Source(Source(Crawler::new(mapped_relation))),
             children: Box::new(QueryChildren::None),
             resulting_relation: relation
                 .attributes()
@@ -197,7 +214,7 @@ impl<'a> QueryNode<'a> {
     }
 
     pub fn optimize_query(&mut self) {
-        let optimizer = Optimizer::new(self);
+        let mut optimizer = Optimizer::new(self, 500);
         optimizer.optimize();
     }
 
@@ -207,8 +224,8 @@ impl<'a> QueryNode<'a> {
     }
 
     pub fn execute_query<'q>(self) -> QueryResult<'q>
-    where
-        'a: 'q,
+        where
+            'a: 'q,
     {
         let mut output_tuples: Vec<Tuple> = vec![];
         let relation = self.resulting_relation.clone();
@@ -348,6 +365,112 @@ impl<'a> QueryNode<'a> {
             }
         }
     }
+
+    pub fn children(&self) -> Vec<&QueryNode<'a>> {
+        match &*self.children {
+            QueryChildren::None => { vec![]}
+            QueryChildren::One(o) => { vec![o]}
+            QueryChildren::Two(l, r) => { vec![l, r] }
+        }
+    }
+
+
+    pub(super) fn children_mut(&mut self) -> &mut QueryChildren<'a> {
+        &mut self.children
+    }
+
+
+    pub(super) fn children_mut_list(&mut self) -> Vec<&mut QueryNode<'a>> {
+        match &mut *self.children {
+            QueryChildren::None => { vec![]}
+            QueryChildren::One(o) => { vec![o]}
+            QueryChildren::Two(l, r) => { vec![l, r] }
+        }
+    }
+
+    pub fn query(&self) -> &Query<'a> {
+        &self.query
+    }
+
+    pub(super) fn query_mut(&mut self) -> &Query<'a> {
+        &mut self.query
+    }
+
+    /// Gets the count of nodes in this query
+    pub fn nodes(&self) -> usize {
+        1usize + self.children().iter().map(|child| child.nodes()).sum::<usize>()
+    }
+
+    /// Finds the lowest node with this relation in it. If multiple children contain the
+    /// relation, this node is the lowest node.
+    pub fn find_relation<I : Into<Identifier> + ToOwned<Owned=I>>(&self, relation: I) -> Option<&QueryNode> {
+        let id = relation.into();
+        for child in self.children() {
+            if let Some(node) = child.find_relation(&id) {
+                return Some(node);
+            }
+        }
+
+        if let Query::Source(source) = &self.query {
+            if source.source.valid_name(&id) {
+                ret = Some(self)
+            }
+        }
+
+
+        ret
+    }
+
+    /// Finds the lowest node with these relations in it. If multiple children contain the
+    /// relations, this node is the lowest node.
+    pub fn find_relations<Iter, Id>(&self, relations: Iter) -> Option<&QueryNode<'a>>
+        where
+            Id : Into<Identifier> + ToOwned<Owned=Id>,
+            Iter: IntoIterator<Item=Id>
+    {
+        let ids: HashSet<Identifier> = relations.into_iter().map(|id| id.into()).collect();
+        self.find_relations_helper(&ids).1
+    }
+
+    /// Returns the list of relations that this node has access to
+    fn find_relations_helper(&self, relations: &HashSet<Identifier>) -> (HashSet<Identifier>, Option<&QueryNode<'a>>) {
+        let mut ret = None;
+        let mut found_relations = HashSet::new();
+        for child in self.children() {
+            match child.find_relations_helper(relations) {
+                (vec, None) => {
+                    found_relations.extend(vec);
+                },
+                (_, Some(child_result)) => {
+                    if ret.is_none() {
+                        ret = Some(child_result);
+                    } else {
+                        return (HashSet::new(), Some(self));
+                    }
+                }
+            }
+        }
+
+
+        if found_relations.is_superset(relations) {
+            return (HashSet::new(), Some(self));
+        }
+
+        if let Query::Source(source) = &self.query {
+            for id in relations {
+                if source.source.valid_name(&id) {
+                    found_relations.insert(id.clone());
+                    break;
+                }
+            }
+
+        }
+
+
+        (found_relations, None)
+    }
+
+
 }
 
 #[cfg(test)]

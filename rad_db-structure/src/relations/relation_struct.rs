@@ -146,6 +146,31 @@ impl Relation {
     pub fn insert(&mut self, tuple: Tuple) {
         self.backing_table.insert(tuple);
     }
+
+    pub fn get_field_index<I : Into<Identifier>>(&self, identifier: I) -> Option<usize> {
+        self.get_field_index_of_identifier(identifier.into())
+    }
+
+    fn get_field_index_of_identifier(&self, identifier: Identifier) -> Option<usize> {
+        let field_name =
+            match identifier.parent() {
+                None => {
+                    identifier.base()
+                }
+                Some(parent) => {
+                    if parent == &self.name {
+                        identifier.base()
+                    } else {
+                        return None;
+                    }
+                }
+            };
+
+        self.attributes
+            .iter()
+            .map(|(id, _)| id)
+            .position(|id| id == field_name)
+    }
 }
 
 impl<I: Into<Identifier>> Rename<I> for Relation {
@@ -441,6 +466,7 @@ mod tests {
             relation.backing_table.insert(Tuple::from_iter(&[i.into()]));
         }
         let mut iterator = relation.tuples();
+        assert_eq!(iterator.size_hint(), (128, Some(128)));
         let calc_sum: usize = iterator
             .map(|t| t[0].clone())
             .filter_map(|ty| {
