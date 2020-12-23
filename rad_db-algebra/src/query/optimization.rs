@@ -1,56 +1,94 @@
-use crate::query::query_node::{QueryNode, QueryChildren, Source};
-use crate::query::query_node::Query;
-use std::collections::HashMap;
-use rad_db_structure::identifier::Identifier;
-use rad_db_types::Value;
-use rad_db_structure::relations::Relation;
 use crate::error::MissingFieldError;
+use crate::query::conditions::{Condition, JoinCondition};
+use crate::query::query_node::Query;
+use crate::query::query_node::{QueryChildren, QueryNode, Source};
+use rad_db_structure::identifier::Identifier;
+use rad_db_structure::relations::Relation;
+use rad_db_types::Value;
 use rand::seq::IteratorRandom;
+use std::collections::{HashMap, HashSet};
+use std::iter::FromIterator;
 
-
-pub struct Optimizer<'a, 'q> where 'q : 'a {
+pub struct Optimizer<'a, 'q>
+where
+    'q: 'a,
+{
     query_node: &'a mut QueryNode<'q>,
     start_tuples: usize,
     /// A sample of some amount of random values of the relevant fields in selections
-    samples: HashMap<Identifier, Vec<Value>>
+    samples: HashMap<Identifier, Vec<Value>>,
 }
 
-fn sample_field(field: &Identifier, source: &Relation, samples: usize) -> Result<Vec<Value>, MissingFieldError> {
+fn sample_field(
+    field: &Identifier,
+    source: &Relation,
+    samples: usize,
+) -> Result<Vec<Value>, MissingFieldError> {
     let field_index = source.get_field_index(field);
     if field_index.is_none() {
         return Err(MissingFieldError::new(field.clone()));
     }
-    let field_index =field_index.unwrap();
+    let field_index = field_index.unwrap();
     let tuples = source.tuples();
     let mut random = rand::thread_rng();
     let sampled_tuples = tuples.choose_multiple(&mut random, samples);
-    let samples_values: Vec<_> = sampled_tuples.into_iter()
-        .map(|tuple| tuple.take(field_index) )
+    let samples_values: Vec<_> = sampled_tuples
+        .into_iter()
+        .map(|tuple| tuple.take(field_index))
         .collect();
     Ok(samples_values)
 }
 
-impl<'a, 'query> Optimizer<'a, 'query> where 'query : 'a {
+fn find_all_selections<'a>(query: &'a QueryNode<'_>) -> Vec<&'a Condition> {
+    let mut ret = vec![];
+
+    if let Query::Selection(condition) = query.query_operation() {
+        ret.push(condition);
+    }
+
+    for child in query.children() {
+        ret.extend(find_all_selections(child));
+    }
+
+    ret
+}
+
+impl<'a, 'query> Optimizer<'a, 'query>
+where
+    'query: 'a,
+{
     pub fn new(query: &'a mut QueryNode<'query>, samples: usize) -> Self {
         let tuples = query.approximate_created_tuples();
-        let mut samples = HashMap::new();
+        let mut sampled_fields = HashMap::new();
 
-
-
-
+        let all_relevant_fields: HashSet<_> = find_all_selections(query)
+            .into_iter()
+            .map(|condition| condition.relevant_fields())
+            .flatten()
+            .collect();
+        for field in all_relevant_fields {
+            if let Some(node) = query.find_node_with_field(&field) {
+                if let Some(relation) = node.my_relation() {
+                    let sample = sample_field(&field, relation, samples)
+                        .expect(&*format!("Field {} went missing", field));
+                    sampled_fields.insert(field, sample);
+                }
+            }
+        }
 
         Self {
             query_node: query,
             start_tuples: tuples,
-            samples
+            samples: sampled_fields,
         }
     }
 
     fn get_relations(query: &QueryNode<'query>) -> Vec<&'query Relation> {
-        if let Query::Source(s) = query.query() {
+        if let Query::Source(s) = query.query_operation() {
             vec![s.relation()]
         } else {
-            query.children()
+            query
+                .children()
                 .iter()
                 .map(|c| Self::get_relations(*c))
                 .flatten()
@@ -76,15 +114,6 @@ impl<'a, 'query> Optimizer<'a, 'query> where 'query : 'a {
         };
 
         if split_conditions.len() > 1 {
-            /*
-            let mut iterator = split_conditions.into_iter();
-            let mut ptr = QueryNode::select_on_condition()iterator.next().unwrap();
-            while let Some(condition) = iterator.next() {
-                ptr = QueryNode::select_on_condition(ptr, condition);
-            }
-
-             */
-
             let ptr = std::mem::replace(node.children_mut(), QueryChildren::None);
             if let QueryChildren::One(mut ptr) = ptr {
                 for condition in split_conditions {
@@ -101,14 +130,185 @@ impl<'a, 'query> Optimizer<'a, 'query> where 'query : 'a {
         }
     }
 
+    /// If child is selection, this will flip the conditions
+    fn commute_selection(parent: &'query mut QueryNode<'query>) {
+        let parent_condition = if let Query::Selection(parent_condition) = parent.query_operation()
+        {
+            parent_condition.clone()
+        } else {
+            return;
+        };
+        let child_condition = if let Some(Query::Selection(child_condition)) =
+            parent.children().get(0).map(|c| c.query_operation())
+        {
+            child_condition.clone()
+        } else {
+            return;
+        };
+
+        if let Query::Selection(parent_condition) = parent.query_mut() {
+            *parent_condition = child_condition;
+        }
+
+        if let Some(child) = parent.children_mut_list().get_mut(0) {
+            if let Query::Selection(child_condition) = child.query_mut() {
+                *child_condition = parent_condition;
+            }
+        }
+    }
+
+    /// Removes all direct child projections
+    fn cascade_projection(parent: &'query mut QueryNode<'query>) {
+        let is_projections = if let Query::Projection(_) = parent.query_operation() {
+            true
+        } else {
+            false
+        };
+
+        if is_projections {
+            if let QueryChildren::One(mut ptr) = parent.take_children() {
+                while let Query::Projection(_) = ptr.query_operation() {
+                    if let QueryChildren::One(new_ptr) = ptr.take_children() {
+                        ptr = new_ptr
+                    } else {
+                        break;
+                    }
+                }
+                *parent.children_mut() = QueryChildren::One(ptr);
+            }
+        }
+    }
+
+    /// Commute selection and projection
+    fn commute_projection_and_selection(parent: &mut QueryNode<'query>) {
+        let swap = if let Query::Projection(_) = parent.query_operation() {
+            let child = parent.children()[0];
+            if let Query::Selection(_) = child.query_operation() {
+                true
+            } else {
+                false
+            }
+        } else if let Query::Selection(_) = parent.query_operation() {
+            let child = parent.children()[0];
+            if let Query::Projection(_) = child.query_operation() {
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if swap {
+            let take = parent.take_children();
+            if let QueryChildren::One(mut child) = take {
+                std::mem::swap(parent, &mut child);
+                *parent.children_mut() = QueryChildren::One(child);
+            }
+        }
+    }
+
+    /// Swaps the children of a join operation for inner joins or cross products
+    fn commute_join(join: &'query mut QueryNode<'query>) {
+        let is_join = match join.query_operation() {
+            Query::CrossProduct => true,
+            Query::InnerJoin(_) => true,
+            Query::NaturalJoin => true,
+            _ => false,
+        };
+
+        if is_join {
+            if let QueryChildren::Two(left, right) = join.children_mut() {
+                std::mem::swap(left, right);
+            }
+        }
+    }
+
+    /// Turns a selection followed by a cross product into a inner join, if select.f1=f2(R1xR2) is
+    /// equivalent to R1 join.f1=f2 R2. This is true when f1 is a field in either a child of R1 or R1 itself, and f2 is the same for R2
+    fn commute_selection_with_join(selection: &'query mut QueryNode<'query>) {
+        let make_join = if let Query::Selection(condition) = selection.query_operation() {
+            let make_join = {
+                let children = selection.children();
+                if let Query::CrossProduct = children[0].query_operation() {
+                    if condition.not_conjunction() {
+                        let relevant_fields = Vec::from_iter(condition.relevant_fields());
+                        let first_node = selection.find_node_with_field(&relevant_fields[0]);
+                        let second_node = selection.find_node_with_field(&relevant_fields[1]);
+
+                        match (first_node, second_node) {
+                            (Some(first_node), Some(second_node)) => {
+                                if first_node == second_node
+                                    || first_node == selection
+                                    || second_node == selection
+                                {
+                                    return; // nodes can't be each-other, or the parent node
+                                }
+
+                                if children[0].is_parent_or_self(first_node) {
+                                    (true, false, relevant_fields)
+                                } else {
+                                    (true, true, relevant_fields)
+                                }
+                            }
+                            _ => return,
+                        }
+                    } else {
+                        return;
+                    }
+                } else {
+                    return;
+                }
+            }; // second boolean is whether condition is reversed, where true is reversed
+
+            make_join
+        } else {
+            return;
+        };
+        if let (true, reverse, fields) = make_join {
+            let children = selection.take_children();
+            if let QueryChildren::Two(left, right) = children {
+                let join_condition = if reverse {
+                    JoinCondition::new(fields[1].clone(), fields[0].clone())
+                } else {
+                    JoinCondition::new(fields[0].clone(), fields[1].clone())
+                };
+
+                let join = QueryNode::inner_join(left, right, join_condition);
+
+                *selection = join;
+            }
+        }
+    }
+
+    /// Splits a projection over a join.
+    ///
+    /// If the projection contains the fields used in the join, then
+    /// the project is completely split and moved down the tree.
+    ///
+    /// If the projection doesn't contain the fields, instead new projections are made that contain
+    /// the projection and the fields used for the join. The original projection is kept.
+    fn split_projections_over_join(projection: &'query mut QueryNode<'query>) {
+        if let Query::Projection(projections) = projection.query_operation() {
+            if let Query::InnerJoin(join_condition) = projection.children()[0].query_operation() {
+                let mut left_fields = Vec::new();
+                let mut right_fields = Vec::new();
+
+                let child = projection.children()[0];
+                let join_children = child.children();
+                let left = join_condition[0];
+                let right = join_condition[1];
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rad_db_types::{Type, Value};
-    use rad_db_structure::prelude::*;
     use crate::query::conditions::{Condition, ConditionOperation, Operand};
+    use rad_db_structure::prelude::*;
+    use rad_db_types::{Type, Value};
     use std::iter::FromIterator;
 
     #[test]
@@ -123,14 +323,19 @@ mod tests {
             //println!("Inserting tuple {}", i);
             relation1.insert(Tuple::from_iter(&[Value::from(i)]));
         }
-        let query =
-            QueryNode::select_on_condition(
-                QueryNode::source(&relation1),
-                Condition::and(
-                    Condition::new("field1", ConditionOperation::Equals(Operand::UnsignedNumber(32))),
-                    Condition::new("field1", ConditionOperation::Nequals(Operand::UnsignedNumber(34)))
-                )
-            );
+        let query = QueryNode::select_on_condition(
+            QueryNode::source(&relation1),
+            Condition::and(
+                Condition::new(
+                    "field1",
+                    ConditionOperation::Equals(Operand::UnsignedNumber(32)),
+                ),
+                Condition::new(
+                    "field1",
+                    ConditionOperation::Nequals(Operand::UnsignedNumber(34)),
+                ),
+            ),
+        );
         let query_copied = query.clone();
         let optimized = query.optimized();
         let optimized_tuple_count = optimized.approximate_created_tuples();

@@ -1,16 +1,16 @@
-use crate::query::conditions::{JoinCondition, Condition, Operand, ConditionOperation};
+use crate::query::conditions::{Condition, ConditionOperation, JoinCondition, Operand};
+use crate::query::optimization::Optimizer;
 use crate::query::query_iterator::QueryIterator;
 use crate::query::query_result::QueryResult;
 use crate::query::Repeatable;
+use crate::relation_mapping::MappedRelation;
 use rad_db_structure::identifier::Identifier;
 use rad_db_structure::relations::tuple_storage::{BlockIterator, StoredTupleIterator};
 use rad_db_structure::relations::Relation;
 use rad_db_structure::tuple::Tuple;
 use rad_db_types::{Type, Value};
-use std::collections::{HashMap, HashSet};
 use std::cmp::max;
-use crate::query::optimization::Optimizer;
-use crate::relation_mapping::MappedRelation;
+use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 
 #[derive(Clone)]
@@ -113,8 +113,7 @@ pub struct QueryNode<'a> {
 
 impl<'a> PartialEq<&QueryNode<'a>> for &QueryNode<'a> {
     fn eq(&self, other: &&QueryNode<'a>) -> bool {
-        *other as *const QueryNode<'a>
-            == *self as *const QueryNode<'a>
+        *other as *const QueryNode<'a> == *self as *const QueryNode<'a>
     }
 }
 
@@ -210,7 +209,7 @@ impl<'a> QueryNode<'a> {
     }
 
     pub fn select_eq(node: QueryNode<'a>, id: Identifier, eq: Operand) -> Self {
-        Self::select_on_condition(node ,Condition::new(id, ConditionOperation::Equals(eq)))
+        Self::select_on_condition(node, Condition::new(id, ConditionOperation::Equals(eq)))
     }
 
     pub fn optimize_query(&mut self) {
@@ -224,8 +223,8 @@ impl<'a> QueryNode<'a> {
     }
 
     pub fn execute_query<'q>(self) -> QueryResult<'q>
-        where
-            'a: 'q,
+    where
+        'a: 'q,
     {
         let mut output_tuples: Vec<Tuple> = vec![];
         let relation = self.resulting_relation.clone();
@@ -311,9 +310,7 @@ impl<'a> QueryNode<'a> {
 
     pub fn approximate_created_tuples(&self) -> usize {
         match &self.query {
-            Query::Source(s) => {
-                s.source_len()
-            }
+            Query::Source(s) => s.source_len(),
             Query::Projection(_) => {
                 if let QueryChildren::One(child) = &*self.children {
                     child.approximate_created_tuples()
@@ -337,7 +334,10 @@ impl<'a> QueryNode<'a> {
             }
             Query::InnerJoin(_) => {
                 if let QueryChildren::Two(l, r) = &*self.children {
-                    max(l.approximate_created_tuples(), r.approximate_created_tuples())
+                    max(
+                        l.approximate_created_tuples(),
+                        r.approximate_created_tuples(),
+                    )
                 } else {
                     panic!("Invalid query")
                 }
@@ -358,7 +358,10 @@ impl<'a> QueryNode<'a> {
             }
             Query::NaturalJoin => {
                 if let QueryChildren::Two(l, r) = &*self.children {
-                    max(l.approximate_created_tuples(), r.approximate_created_tuples())
+                    max(
+                        l.approximate_created_tuples(),
+                        r.approximate_created_tuples(),
+                    )
                 } else {
                     panic!("Invalid query")
                 }
@@ -368,42 +371,60 @@ impl<'a> QueryNode<'a> {
 
     pub fn children(&self) -> Vec<&QueryNode<'a>> {
         match &*self.children {
-            QueryChildren::None => { vec![]}
-            QueryChildren::One(o) => { vec![o]}
-            QueryChildren::Two(l, r) => { vec![l, r] }
+            QueryChildren::None => {
+                vec![]
+            }
+            QueryChildren::One(o) => {
+                vec![o]
+            }
+            QueryChildren::Two(l, r) => {
+                vec![l, r]
+            }
         }
     }
-
 
     pub(super) fn children_mut(&mut self) -> &mut QueryChildren<'a> {
         &mut self.children
     }
 
-
     pub(super) fn children_mut_list(&mut self) -> Vec<&mut QueryNode<'a>> {
         match &mut *self.children {
-            QueryChildren::None => { vec![]}
-            QueryChildren::One(o) => { vec![o]}
-            QueryChildren::Two(l, r) => { vec![l, r] }
+            QueryChildren::None => {
+                vec![]
+            }
+            QueryChildren::One(o) => {
+                vec![o]
+            }
+            QueryChildren::Two(l, r) => {
+                vec![l, r]
+            }
         }
     }
 
-    pub fn query(&self) -> &Query<'a> {
+    pub fn query_operation(&self) -> &Query<'a> {
         &self.query
     }
 
-    pub(super) fn query_mut(&mut self) -> &Query<'a> {
+    pub(super) fn query_mut(&mut self) -> &mut Query<'a> {
         &mut self.query
     }
 
     /// Gets the count of nodes in this query
     pub fn nodes(&self) -> usize {
-        1usize + self.children().iter().map(|child| child.nodes()).sum::<usize>()
+        1usize
+            + self
+                .children()
+                .iter()
+                .map(|child| child.nodes())
+                .sum::<usize>()
     }
 
     /// Finds the lowest node with this relation in it. If multiple children contain the
     /// relation, this node is the lowest node.
-    pub fn find_relation<I : Into<Identifier> + ToOwned<Owned=I>>(&self, relation: I) -> Option<&QueryNode> {
+    pub fn find_relation<I: Into<Identifier> + ToOwned<Owned = I>>(
+        &self,
+        relation: I,
+    ) -> Option<&QueryNode> {
         let id = relation.into();
         for child in self.children() {
             if let Some(node) = child.find_relation(&id) {
@@ -413,34 +434,36 @@ impl<'a> QueryNode<'a> {
 
         if let Query::Source(source) = &self.query {
             if source.source.valid_name(&id) {
-                ret = Some(self)
+                return Some(self);
             }
         }
 
-
-        ret
+        None
     }
 
     /// Finds the lowest node with these relations in it. If multiple children contain the
     /// relations, this node is the lowest node.
     pub fn find_relations<Iter, Id>(&self, relations: Iter) -> Option<&QueryNode<'a>>
-        where
-            Id : Into<Identifier> + ToOwned<Owned=Id>,
-            Iter: IntoIterator<Item=Id>
+    where
+        Id: Into<Identifier> + ToOwned<Owned = Id>,
+        Iter: IntoIterator<Item = Id>,
     {
         let ids: HashSet<Identifier> = relations.into_iter().map(|id| id.into()).collect();
         self.find_relations_helper(&ids).1
     }
 
     /// Returns the list of relations that this node has access to
-    fn find_relations_helper(&self, relations: &HashSet<Identifier>) -> (HashSet<Identifier>, Option<&QueryNode<'a>>) {
+    fn find_relations_helper(
+        &self,
+        relations: &HashSet<Identifier>,
+    ) -> (HashSet<Identifier>, Option<&QueryNode<'a>>) {
         let mut ret = None;
         let mut found_relations = HashSet::new();
         for child in self.children() {
             match child.find_relations_helper(relations) {
                 (vec, None) => {
                     found_relations.extend(vec);
-                },
+                }
                 (_, Some(child_result)) => {
                     if ret.is_none() {
                         ret = Some(child_result);
@@ -450,7 +473,6 @@ impl<'a> QueryNode<'a> {
                 }
             }
         }
-
 
         if found_relations.is_superset(relations) {
             return (HashSet::new(), Some(self));
@@ -463,14 +485,77 @@ impl<'a> QueryNode<'a> {
                     break;
                 }
             }
-
         }
-
 
         (found_relations, None)
     }
 
+    /// If this node only has one relation, this function finds such relation. If there are
+    /// multiple relations that this is parent of, None is returned.
+    pub(super) fn my_relation(&self) -> Option<&'a Relation> {
+        if let Query::Source(source) = &self.query {
+            // Garuanteed no children
+            return Some(source.source.relation());
+        }
 
+        let mut ret = None;
+        for child in self.children() {
+            if let Some(child_relation) = child.my_relation() {
+                if ret.is_none() {
+                    ret = Some(child_relation)
+                } else {
+                    return None;
+                }
+            }
+        }
+
+        ret
+    }
+
+    /// Finds a node with a field. If multiple relations within the query have the same field, but aren't
+    /// part of the same relation
+    pub fn find_node_with_field<I: Into<Identifier> + ToOwned<Owned = I>>(
+        &self,
+        field: I,
+    ) -> Option<&QueryNode<'a>> {
+        let id = field.into();
+        if let Query::Source(source) = &self.query {
+            if source.source.contains_field(&id) {
+                return Some(self);
+            }
+        }
+
+        let mut ret = None;
+        for child in self.children() {
+            if let Some(node) = child.find_node_with_field(&id) {
+                if ret == None {
+                    ret = Some(node);
+                } else {
+                    if ret.unwrap() != node {
+                        return None;
+                    }
+                }
+            }
+        }
+
+        ret
+    }
+
+    pub(super) fn take_children(&mut self) -> QueryChildren<'a> {
+        *std::mem::replace(&mut self.children, Box::new(QueryChildren::None))
+    }
+
+    pub fn is_parent_or_self(&self, other: &QueryNode<'a>) -> bool {
+        if self == other {
+            return true;
+        }
+
+        match &*self.children {
+            QueryChildren::None => false,
+            QueryChildren::One(child) => child.is_parent_or_self(other),
+            QueryChildren::Two(l, r) => l.is_parent_or_self(other) || r.is_parent_or_self(other),
+        }
+    }
 }
 
 #[cfg(test)]

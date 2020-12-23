@@ -1,7 +1,9 @@
+use crate::query::query_node::QueryNode;
 use rad_db_structure::identifier::Identifier;
 use rad_db_types::Value;
 use std::cmp::min;
-use crate::query::query_node::QueryNode;
+use std::collections::HashSet;
+use std::iter::FromIterator;
 
 #[derive(Debug, Clone)]
 pub struct JoinCondition {
@@ -63,9 +65,7 @@ impl ConditionOperation {
         let ret = match self {
             ConditionOperation::Equals(_) => 1.0 / max_tuples as f64,
             ConditionOperation::Nequals(_) => 1.0 - 1.0 / max_tuples as f64,
-            ConditionOperation::And(c, r) => {
-                c.selectivity(max_tuples) * r.selectivity(max_tuples)
-            },
+            ConditionOperation::And(c, r) => c.selectivity(max_tuples) * r.selectivity(max_tuples),
             ConditionOperation::Or(c, r) => {
                 min_float!(c.selectivity(max_tuples) + r.selectivity(max_tuples), 1.0)
             }
@@ -78,6 +78,24 @@ impl ConditionOperation {
             }
         } else {
             ret
+        }
+    }
+
+    fn relevant_fields(&self) -> HashSet<Identifier> {
+        match &self {
+            ConditionOperation::Equals(Operand::Id(id)) => HashSet::from_iter(vec![id.clone()]),
+            ConditionOperation::Nequals(Operand::Id(id)) => HashSet::from_iter(vec![id.clone()]),
+            ConditionOperation::And(left, more) => {
+                let mut relevant = left.relevant_fields();
+                relevant.extend(more.relevant_fields());
+                relevant
+            }
+            ConditionOperation::Or(left, more) => {
+                let mut relevant = left.relevant_fields();
+                relevant.extend(more.relevant_fields());
+                relevant
+            }
+            _ => HashSet::new(),
         }
     }
 }
@@ -127,6 +145,22 @@ impl Condition {
     pub fn selectivity(&self, max_tuples: usize) -> f64 {
         self.operation.selectivity(max_tuples)
     }
+
+    /// Returns the relevant fields for the condition
+    pub fn relevant_fields(&self) -> HashSet<Identifier> {
+        let mut ret = HashSet::new();
+        ret.insert(self.base.clone());
+        ret.extend(self.operation.relevant_fields());
+        ret
+    }
+
+    /// Tests whether this is a conjunction or not
+    pub fn not_conjunction(&self) -> bool {
+        match &self.operation {
+            ConditionOperation::And(..) | ConditionOperation::Or(..) => false,
+            _ => true,
+        }
+    }
 }
 
 impl<I: Into<Identifier>> From<I> for Operand {
@@ -134,8 +168,6 @@ impl<I: Into<Identifier>> From<I> for Operand {
         Operand::Id(s.into())
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {
