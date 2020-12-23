@@ -1,4 +1,4 @@
-use crate::query::conditions::JoinCondition;
+use crate::query::conditions::{JoinCondition, Condition};
 use crate::query::query_iterator::QueryIterator;
 use crate::query::query_result::QueryResult;
 use crate::query::Repeatable;
@@ -80,7 +80,7 @@ impl Iterator for Source<'_> {
 pub enum Query<'a> {
     Source(Source<'a>),
     Projection(Vec<Projection>),
-    Selection(Box<dyn Fn(&Tuple) -> bool>),
+    Selection(Condition),
     CrossProduct,
     InnerJoin(JoinCondition),
     LeftJoin(JoinCondition),
