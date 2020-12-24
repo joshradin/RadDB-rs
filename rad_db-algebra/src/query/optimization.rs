@@ -130,20 +130,22 @@ where
         }
     }
 
+    fn push_selects_down(&self) {}
+
     /// If child is selection, this will flip the conditions
-    fn commute_selection(parent: &'query mut QueryNode<'query>) {
+    fn commute_selection(parent: &'query mut QueryNode<'query>) -> bool {
         let parent_condition = if let Query::Selection(parent_condition) = parent.query_operation()
         {
             parent_condition.clone()
         } else {
-            return;
+            return false;
         };
         let child_condition = if let Some(Query::Selection(child_condition)) =
             parent.children().get(0).map(|c| c.query_operation())
         {
             child_condition.clone()
         } else {
-            return;
+            return false;
         };
 
         if let Query::Selection(parent_condition) = parent.query_mut() {
@@ -155,10 +157,11 @@ where
                 *child_condition = parent_condition;
             }
         }
+        true
     }
 
     /// Removes all direct child projections
-    fn cascade_projection(parent: &'query mut QueryNode<'query>) {
+    fn cascade_projection(parent: &'query mut QueryNode<'query>) -> bool {
         let is_projections = if let Query::Projection(_) = parent.query_operation() {
             true
         } else {
@@ -176,11 +179,13 @@ where
                 }
                 *parent.children_mut() = QueryChildren::One(ptr);
             }
+            return true;
         }
+        false
     }
 
     /// Commute selection and projection
-    fn commute_projection_and_selection(parent: &mut QueryNode<'query>) {
+    fn commute_projection_and_selection(parent: &mut QueryNode<'query>) -> bool {
         let swap = if let Query::Projection(_) = parent.query_operation() {
             let child = parent.children()[0];
             if let Query::Selection(_) = child.query_operation() {
@@ -205,11 +210,13 @@ where
                 std::mem::swap(parent, &mut child);
                 *parent.children_mut() = QueryChildren::One(child);
             }
+            return true;
         }
+        false
     }
 
     /// Swaps the children of a join operation for inner joins or cross products
-    fn commute_join(join: &'query mut QueryNode<'query>) {
+    fn commute_join(join: &'query mut QueryNode<'query>) -> bool {
         let is_join = match join.query_operation() {
             Query::CrossProduct => true,
             Query::InnerJoin(_) => true,
@@ -221,12 +228,14 @@ where
             if let QueryChildren::Two(left, right) = join.children_mut() {
                 std::mem::swap(left, right);
             }
+            return true;
         }
+        false
     }
 
     /// Turns a selection followed by a cross product into a inner join, if select.f1=f2(R1xR2) is
     /// equivalent to R1 join.f1=f2 R2. This is true when f1 is a field in either a child of R1 or R1 itself, and f2 is the same for R2
-    fn commute_selection_with_join(selection: &'query mut QueryNode<'query>) {
+    fn commute_selection_with_join(selection: &'query mut QueryNode<'query>) -> bool {
         let make_join = if let Query::Selection(condition) = selection.query_operation() {
             let make_join = {
                 let children = selection.children();
@@ -242,7 +251,7 @@ where
                                     || first_node == selection
                                     || second_node == selection
                                 {
-                                    return; // nodes can't be each-other, or the parent node
+                                    return false; // nodes can't be each-other, or the parent node
                                 }
 
                                 if children[0].is_parent_or_self(first_node) {
@@ -251,19 +260,19 @@ where
                                     (true, true, relevant_fields)
                                 }
                             }
-                            _ => return,
+                            _ => return false,
                         }
                     } else {
-                        return;
+                        return false;
                     }
                 } else {
-                    return;
+                    return false;
                 }
             }; // second boolean is whether condition is reversed, where true is reversed
 
             make_join
         } else {
-            return;
+            return false;
         };
         if let (true, reverse, fields) = make_join {
             let children = selection.take_children();
@@ -278,7 +287,9 @@ where
 
                 *selection = join;
             }
+            return true;
         }
+        false
     }
 
     /// Splits a projection over a join.
@@ -288,31 +299,67 @@ where
     ///
     /// If the projection doesn't contain the fields, instead new projections are made that contain
     /// the projection and the fields used for the join. The original projection is kept.
-    fn split_projections_over_join(projection: &'query mut QueryNode<'query>) {
+    fn split_projections_over_join(projection: &'query mut QueryNode<'query>) -> bool {
         if let Query::Projection(projections) = projection.query_operation() {
             if let Query::InnerJoin(join_condition) = projection.children()[0].query_operation() {
+                let projections = projections.to_owned();
+                let join_condition = join_condition.to_owned();
+
+                let mut child = {
+                    if let QueryChildren::One(child) = projection.take_children() {
+                        child
+                    } else {
+                        unreachable!()
+                    }
+                };
+
                 let mut left_fields = Vec::new();
                 let mut right_fields = Vec::new();
 
-                let child = projection.children()[0];
-                let join_children = child.children();
-                let left = join_children[0];
-                let right = join_children[1];
-
-                for id in projections {
-                    let query = projection.find_node_with_field(id).unwrap();
-                    if left.is_parent_or_self(query) {
-                        left_fields.push(id.clone())
-                    } else if right.is_parent_or_self(query) {
-                        right_fields.push(id.clone())
+                if let QueryChildren::Two(mut left, mut right) = child.take_children() {
+                    for id in projections {
+                        let query = projection.find_node_with_field(&id).unwrap();
+                        if left.is_parent_or_self(query) {
+                            left_fields.push(id.clone())
+                        } else if right.is_parent_or_self(query) {
+                            right_fields.push(id.clone())
+                        }
                     }
-                }
 
-                if left_fields.contains(join_condition.left_id())
-                    && right_fields.contains(join_condition.right_id())
-                {}
+                    if left_fields.contains(join_condition.left_id())
+                        && right_fields.contains(join_condition.right_id())
+                    {
+                        let left_projection = QueryNode::projection(left, left_fields);
+                        let right_projection = QueryNode::projection(right, right_fields);
+                        let join = QueryNode::inner_join(
+                            left_projection,
+                            right_projection,
+                            join_condition,
+                        );
+                        *projection = join;
+                    } else {
+                        if !left_fields.contains(join_condition.left_id()) {
+                            left_fields.push(join_condition.left_id().clone());
+                        }
+                        if !right_fields.contains(join_condition.right_id()) {
+                            right_fields.push(join_condition.right_id().clone());
+                        }
+                        let left_projection = QueryNode::projection(left, left_fields);
+                        let right_projection = QueryNode::projection(right, right_fields);
+                        let join = QueryNode::inner_join(
+                            left_projection,
+                            right_projection,
+                            join_condition,
+                        );
+                        *projection.children_mut() = QueryChildren::One(join);
+                    }
+                } else {
+                    unreachable!()
+                }
+                return true;
             }
         }
+        false
     }
 }
 

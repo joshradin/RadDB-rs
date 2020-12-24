@@ -157,7 +157,7 @@ impl<'a> QueryNode<'a> {
         }
     }
 
-    pub fn inner_join(left: QueryNode<'a>, right: QueryNode<'a>, condition: JoinCondition) -> Self {
+    pub fn inner_join(left: Self, right: Self, condition: JoinCondition) -> Self {
         let mut result = Vec::new();
         result.extend(left.resulting_relation.iter().cloned());
         result.extend(right.resulting_relation.iter().cloned());
@@ -174,7 +174,7 @@ impl<'a> QueryNode<'a> {
         }
     }
 
-    pub fn cross_product(left: QueryNode<'a>, right: QueryNode<'a>) -> Self {
+    pub fn cross_product(left: Self, right: Self) -> Self {
         let mut result = Vec::new();
         result.extend(left.resulting_relation.iter().cloned());
         result.extend(right.resulting_relation.iter().cloned());
@@ -191,7 +191,7 @@ impl<'a> QueryNode<'a> {
         }
     }
 
-    pub fn select_on_condition(node: QueryNode<'a>, condition: Condition) -> Self {
+    pub fn select_on_condition(node: Self, condition: Condition) -> Self {
         let vec = node.resulting_relation.clone();
         let map = node.mapping.clone();
         Self {
@@ -202,8 +202,36 @@ impl<'a> QueryNode<'a> {
         }
     }
 
-    pub fn select_eq(node: QueryNode<'a>, id: Identifier, eq: Operand) -> Self {
+    pub fn select_eq(node: Self, id: Identifier, eq: Operand) -> Self {
         Self::select_on_condition(node, Condition::new(id, ConditionOperation::Equals(eq)))
+    }
+
+    pub fn projection<Id: Into<Identifier> + ToOwned<Owned = Id>, I: IntoIterator<Item = Id>>(
+        node: Self,
+        fields: I,
+    ) -> Self {
+        let projections: Vec<Identifier> = fields.into_iter().map(|i| i.into()).collect();
+        let resulting_relation = projections
+            .iter()
+            .filter_map(|id| {
+                if let Some(pos) = node
+                    .resulting_relation
+                    .iter()
+                    .position(|(inner_id, _)| id == inner_id)
+                {
+                    let (_, ty) = &node.resulting_relation[pos];
+                    Some((id.clone(), ty.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        Self {
+            query: Query::Projection(projections),
+            children: Box::new(QueryChildren::One(node)),
+            resulting_relation,
+            mapping: Default::default(),
+        }
     }
 
     pub fn optimize_query(&mut self) {
@@ -549,6 +577,12 @@ impl<'a> QueryNode<'a> {
             QueryChildren::One(child) => child.is_parent_or_self(other),
             QueryChildren::Two(l, r) => l.is_parent_or_self(other) || r.is_parent_or_self(other),
         }
+    }
+
+    /// Pushes a parent to where this node is
+    pub fn push(&mut self, new_parent: QueryNode<'a>) {
+        let old = std::mem::replace(self, new_parent);
+        self.children = Box::new(QueryChildren::One(old));
     }
 }
 
