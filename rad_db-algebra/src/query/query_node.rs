@@ -79,7 +79,7 @@ impl Iterator for Source<'_> {
 }
 
 #[derive(Clone)]
-pub enum Query<'a> {
+pub enum QueryOperation<'a> {
     Source(Source<'a>),
     Projection(Vec<Identifier>),
     Selection(Condition),
@@ -99,10 +99,11 @@ pub enum QueryChildren<'a> {
 
 #[derive(Clone)]
 pub struct QueryNode<'a> {
-    query: Query<'a>,
+    query: QueryOperation<'a>,
     children: Box<QueryChildren<'a>>,
     resulting_relation: Vec<(Identifier, Type)>,
     mapping: HashMap<Identifier, Identifier>,
+    id: usize,
 }
 
 impl<'a> PartialEq<&QueryNode<'a>> for &QueryNode<'a> {
@@ -123,7 +124,7 @@ impl<'a> QueryNode<'a> {
             })
             .collect();
         Self {
-            query: Query::Source(Source(Crawler::new(mapped_relation))),
+            query: QueryOperation::Source(Source(Crawler::new(mapped_relation))),
             children: Box::new(QueryChildren::None),
             resulting_relation: relation
                 .attributes()
@@ -131,6 +132,7 @@ impl<'a> QueryNode<'a> {
                 .map(|(id, val)| (Identifier::new(id), val.clone()))
                 .collect(),
             mapping,
+            id: 0,
         }
     }
 
@@ -146,7 +148,7 @@ impl<'a> QueryNode<'a> {
             })
             .collect();
         Self {
-            query: Query::Source(Source(Crawler::new(mapped_relation))),
+            query: QueryOperation::Source(Source(Crawler::new(mapped_relation))),
             children: Box::new(QueryChildren::None),
             resulting_relation: relation
                 .attributes()
@@ -154,10 +156,11 @@ impl<'a> QueryNode<'a> {
                 .map(|(id, val)| (Identifier::concat(&name, id), val.clone()))
                 .collect(),
             mapping,
+            id: 0,
         }
     }
 
-    pub fn inner_join(left: Self, right: Self, condition: JoinCondition) -> Self {
+    pub fn inner_join(mut left: Self, mut right: Self, condition: JoinCondition) -> Self {
         let mut result = Vec::new();
         result.extend(left.resulting_relation.iter().cloned());
         result.extend(right.resulting_relation.iter().cloned());
@@ -165,16 +168,19 @@ impl<'a> QueryNode<'a> {
             .iter()
             .map(|(id, _)| (id.clone(), id.clone()))
             .collect();
+        left.increment_id();
+        right.increase_id_by(1 + left.count());
 
         QueryNode {
-            query: Query::InnerJoin(condition),
+            query: QueryOperation::InnerJoin(condition),
             children: Box::new(QueryChildren::Two(left, right)),
             resulting_relation: result,
             mapping: mapping,
+            id: 0,
         }
     }
 
-    pub fn cross_product(left: Self, right: Self) -> Self {
+    pub fn cross_product(mut left: Self, mut right: Self) -> Self {
         let mut result = Vec::new();
         result.extend(left.resulting_relation.iter().cloned());
         result.extend(right.resulting_relation.iter().cloned());
@@ -182,12 +188,15 @@ impl<'a> QueryNode<'a> {
             .iter()
             .map(|(id, _)| (id.clone(), id.clone()))
             .collect();
+        left.increment_id();
+        right.increase_id_by(1 + left.count());
 
         QueryNode {
-            query: Query::CrossProduct,
+            query: QueryOperation::CrossProduct,
             children: Box::new(QueryChildren::Two(left, right)),
             resulting_relation: result,
             mapping: mapping,
+            id: 0,
         }
     }
 
@@ -195,10 +204,11 @@ impl<'a> QueryNode<'a> {
         let vec = node.resulting_relation.clone();
         let map = node.mapping.clone();
         Self {
-            query: Query::Selection(condition),
+            query: QueryOperation::Selection(condition),
             children: Box::new(QueryChildren::One(node)),
             resulting_relation: vec,
             mapping: map,
+            id: 0,
         }
     }
 
@@ -207,7 +217,7 @@ impl<'a> QueryNode<'a> {
     }
 
     pub fn projection<Id: Into<Identifier> + ToOwned<Owned = Id>, I: IntoIterator<Item = Id>>(
-        node: Self,
+        mut node: Self,
         fields: I,
     ) -> Self {
         let projections: Vec<Identifier> = fields.into_iter().map(|i| i.into()).collect();
@@ -226,12 +236,36 @@ impl<'a> QueryNode<'a> {
                 }
             })
             .collect();
+        node.increment_id();
         Self {
-            query: Query::Projection(projections),
+            query: QueryOperation::Projection(projections),
             children: Box::new(QueryChildren::One(node)),
             resulting_relation,
             mapping: Default::default(),
+            id: 0,
         }
+    }
+
+    /// Increases the ids of all of the nodes in this tree by one
+    fn increment_id(&mut self) {
+        self.increase_id_by(1)
+    }
+
+    /// Increases the ids of all of the nodes in this tree by this value
+    fn increase_id_by(&mut self, by: usize) {
+        self.id += by;
+        for (i, child) in self.children_mut_list().into_iter().enumerate() {
+            child.increase_id_by(i);
+        }
+    }
+
+    /// Gets the number of nodes in this tree
+    pub fn count(&self) -> usize {
+        let mut ret = 1;
+        for child in self.children() {
+            ret += child.count();
+        }
+        ret
     }
 
     pub fn optimize_query(&mut self) {
@@ -253,11 +287,11 @@ impl<'a> QueryNode<'a> {
         let mut extra = 0;
 
         match (self.query, *self.children) {
-            (Query::Source(source), QueryChildren::None) => {
+            (QueryOperation::Source(source), QueryChildren::None) => {
                 let inner = QueryResult::from_source(relation, source);
                 return inner;
             }
-            (Query::InnerJoin(join), QueryChildren::Two(left, right)) => {
+            (QueryOperation::InnerJoin(join), QueryChildren::Two(left, right)) => {
                 let left_id = &self.mapping[join.left_id()]; // the name of the left id in the left result
                 let right_id = &self.mapping[join.right_id()]; // the name of the right id in the right result
 
@@ -297,7 +331,7 @@ impl<'a> QueryNode<'a> {
                     }
                 }
             }
-            (Query::CrossProduct, QueryChildren::Two(left, right)) => {
+            (QueryOperation::CrossProduct, QueryChildren::Two(left, right)) => {
                 let left = left.execute_query();
                 let right = right.execute_query();
 
@@ -332,29 +366,29 @@ impl<'a> QueryNode<'a> {
 
     pub fn approximate_created_tuples(&self) -> usize {
         match &self.query {
-            Query::Source(s) => s.source_len(),
-            Query::Projection(_) => {
+            QueryOperation::Source(s) => s.source_len(),
+            QueryOperation::Projection(_) => {
                 if let QueryChildren::One(child) = &*self.children {
                     child.approximate_created_tuples()
                 } else {
                     panic!("Invalid query")
                 }
             }
-            Query::Selection(c) => {
+            QueryOperation::Selection(c) => {
                 if let QueryChildren::One(child) = &*self.children {
                     c.selectivity(child.approximate_created_tuples()) as usize
                 } else {
                     panic!("Invalid query")
                 }
             }
-            Query::CrossProduct => {
+            QueryOperation::CrossProduct => {
                 if let QueryChildren::Two(l, r) = &*self.children {
                     l.approximate_created_tuples() * r.approximate_created_tuples()
                 } else {
                     panic!("Invalid query")
                 }
             }
-            Query::InnerJoin(_) => {
+            QueryOperation::InnerJoin(_) => {
                 if let QueryChildren::Two(l, r) = &*self.children {
                     max(
                         l.approximate_created_tuples(),
@@ -364,21 +398,21 @@ impl<'a> QueryNode<'a> {
                     panic!("Invalid query")
                 }
             }
-            Query::LeftJoin(_) => {
+            QueryOperation::LeftJoin(_) => {
                 if let QueryChildren::Two(l, r) = &*self.children {
                     l.approximate_created_tuples() * r.approximate_created_tuples()
                 } else {
                     panic!("Invalid query")
                 }
             }
-            Query::RightJoin(_) => {
+            QueryOperation::RightJoin(_) => {
                 if let QueryChildren::Two(l, r) = &*self.children {
                     l.approximate_created_tuples() * r.approximate_created_tuples()
                 } else {
                     panic!("Invalid query")
                 }
             }
-            Query::NaturalJoin => {
+            QueryOperation::NaturalJoin => {
                 if let QueryChildren::Two(l, r) = &*self.children {
                     max(
                         l.approximate_created_tuples(),
@@ -423,11 +457,11 @@ impl<'a> QueryNode<'a> {
         }
     }
 
-    pub fn query_operation(&self) -> &Query<'a> {
+    pub fn query_operation(&self) -> &QueryOperation<'a> {
         &self.query
     }
 
-    pub(super) fn query_mut(&mut self) -> &mut Query<'a> {
+    pub(super) fn query_mut(&mut self) -> &mut QueryOperation<'a> {
         &mut self.query
     }
 
@@ -454,7 +488,7 @@ impl<'a> QueryNode<'a> {
             }
         }
 
-        if let Query::Source(source) = &self.query {
+        if let QueryOperation::Source(source) = &self.query {
             if source.source.valid_name(&id) {
                 return Some(self);
             }
@@ -500,7 +534,7 @@ impl<'a> QueryNode<'a> {
             return (HashSet::new(), Some(self));
         }
 
-        if let Query::Source(source) = &self.query {
+        if let QueryOperation::Source(source) = &self.query {
             for id in relations {
                 if source.source.valid_name(&id) {
                     found_relations.insert(id.clone());
@@ -515,7 +549,7 @@ impl<'a> QueryNode<'a> {
     /// If this node only has one relation, this function finds such relation. If there are
     /// multiple relations that this is parent of, None is returned.
     pub(super) fn my_relation(&self) -> Option<&'a Relation> {
-        if let Query::Source(source) = &self.query {
+        if let QueryOperation::Source(source) = &self.query {
             // Garuanteed no children
             return Some(source.source.relation());
         }
@@ -541,7 +575,7 @@ impl<'a> QueryNode<'a> {
         field: I,
     ) -> Option<&QueryNode<'a>> {
         let id = field.into();
-        if let Query::Source(source) = &self.query {
+        if let QueryOperation::Source(source) = &self.query {
             if source.source.contains_field(&id) {
                 return Some(self);
             }
@@ -567,6 +601,7 @@ impl<'a> QueryNode<'a> {
         *std::mem::replace(&mut self.children, Box::new(QueryChildren::None))
     }
 
+    /// Checks if the referenced node is this node or a child of this node
     pub fn is_parent_or_self(&self, other: &QueryNode<'a>) -> bool {
         if self == other {
             return true;
@@ -583,6 +618,63 @@ impl<'a> QueryNode<'a> {
     pub fn push(&mut self, new_parent: QueryNode<'a>) {
         let old = std::mem::replace(self, new_parent);
         self.children = Box::new(QueryChildren::One(old));
+    }
+
+    /// Recalculates the resulting relations of the children nodes
+    pub fn recalculate_resulting_relation(&mut self) {
+        for child in self.children_mut_list() {
+            child.recalculate_resulting_relation();
+        }
+
+        let relation = match &self.query {
+            QueryOperation::Source(_) => self.resulting_relation.clone(),
+            QueryOperation::Projection(p) => {
+                let child = self.children()[0];
+                child
+                    .resulting_relation
+                    .iter()
+                    .filter_map(|(id, ty)| {
+                        if p.contains(id) {
+                            Some((id.clone(), ty.clone()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            }
+            QueryOperation::Selection(_) => {
+                let child = self.children()[0];
+                child.resulting_relation.clone()
+            }
+            QueryOperation::CrossProduct
+            | QueryOperation::InnerJoin(_)
+            | QueryOperation::LeftJoin(_)
+            | QueryOperation::RightJoin(_)
+            | QueryOperation::NaturalJoin => {
+                let mut left = self.children()[0].resulting_relation.clone();
+                left.extend(self.children()[1].resulting_relation.clone());
+                left
+            }
+        };
+
+        self.resulting_relation = relation;
+    }
+
+    /// Gets the tree-specific id of the node
+    pub fn id(&self) -> usize {
+        self.id
+    }
+
+    /// Whether this node is a join
+    pub fn is_join(&self) -> bool {
+        match self.query_operation() {
+            QueryOperation::CrossProduct => true,
+            QueryOperation::InnerJoin(_) => true,
+            QueryOperation::LeftJoin(_) => true,
+            QueryOperation::RightJoin(_) => true,
+            QueryOperation::NaturalJoin => true,
+            _ => false,
+        }
     }
 }
 

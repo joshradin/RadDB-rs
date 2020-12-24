@@ -1,6 +1,6 @@
 use crate::error::MissingFieldError;
 use crate::query::conditions::{Condition, JoinCondition};
-use crate::query::query_node::Query;
+use crate::query::query_node::QueryOperation;
 use crate::query::query_node::{QueryChildren, QueryNode, Source};
 use rad_db_structure::identifier::Identifier;
 use rad_db_structure::relations::Relation;
@@ -42,7 +42,7 @@ fn sample_field(
 fn find_all_selections<'a>(query: &'a QueryNode<'_>) -> Vec<&'a Condition> {
     let mut ret = vec![];
 
-    if let Query::Selection(condition) = query.query_operation() {
+    if let QueryOperation::Selection(condition) = query.query_operation() {
         ret.push(condition);
     }
 
@@ -84,7 +84,7 @@ where
     }
 
     fn get_relations(query: &QueryNode<'query>) -> Vec<&'query Relation> {
-        if let Query::Source(s) = query.query_operation() {
+        if let QueryOperation::Source(s) = query.query_operation() {
             vec![s.relation()]
         } else {
             query
@@ -107,7 +107,7 @@ where
 
     /// Splits all AND conditionals into multiple selection nodes
     fn split_all_ands(node: &mut QueryNode<'query>) {
-        let split_conditions = if let Query::Selection(condition) = node.query_mut() {
+        let split_conditions = if let QueryOperation::Selection(condition) = node.query_mut() {
             condition.clone().split_and()
         } else {
             vec![]
@@ -132,15 +132,17 @@ where
 
     fn push_selects_down(&self) {}
 
+
+
     /// If child is selection, this will flip the conditions
     fn commute_selection(parent: &'query mut QueryNode<'query>) -> bool {
-        let parent_condition = if let Query::Selection(parent_condition) = parent.query_operation()
+        let parent_condition = if let QueryOperation::Selection(parent_condition) = parent.query_operation()
         {
             parent_condition.clone()
         } else {
             return false;
         };
-        let child_condition = if let Some(Query::Selection(child_condition)) =
+        let child_condition = if let Some(QueryOperation::Selection(child_condition)) =
             parent.children().get(0).map(|c| c.query_operation())
         {
             child_condition.clone()
@@ -148,12 +150,12 @@ where
             return false;
         };
 
-        if let Query::Selection(parent_condition) = parent.query_mut() {
+        if let QueryOperation::Selection(parent_condition) = parent.query_mut() {
             *parent_condition = child_condition;
         }
 
         if let Some(child) = parent.children_mut_list().get_mut(0) {
-            if let Query::Selection(child_condition) = child.query_mut() {
+            if let QueryOperation::Selection(child_condition) = child.query_mut() {
                 *child_condition = parent_condition;
             }
         }
@@ -162,7 +164,7 @@ where
 
     /// Removes all direct child projections
     fn cascade_projection(parent: &'query mut QueryNode<'query>) -> bool {
-        let is_projections = if let Query::Projection(_) = parent.query_operation() {
+        let is_projections = if let QueryOperation::Projection(_) = parent.query_operation() {
             true
         } else {
             false
@@ -170,7 +172,7 @@ where
 
         if is_projections {
             if let QueryChildren::One(mut ptr) = parent.take_children() {
-                while let Query::Projection(_) = ptr.query_operation() {
+                while let QueryOperation::Projection(_) = ptr.query_operation() {
                     if let QueryChildren::One(new_ptr) = ptr.take_children() {
                         ptr = new_ptr
                     } else {
@@ -186,16 +188,16 @@ where
 
     /// Commute selection and projection
     fn commute_projection_and_selection(parent: &mut QueryNode<'query>) -> bool {
-        let swap = if let Query::Projection(_) = parent.query_operation() {
+        let swap = if let QueryOperation::Projection(_) = parent.query_operation() {
             let child = parent.children()[0];
-            if let Query::Selection(_) = child.query_operation() {
+            if let QueryOperation::Selection(_) = child.query_operation() {
                 true
             } else {
                 false
             }
-        } else if let Query::Selection(_) = parent.query_operation() {
+        } else if let QueryOperation::Selection(_) = parent.query_operation() {
             let child = parent.children()[0];
-            if let Query::Projection(_) = child.query_operation() {
+            if let QueryOperation::Projection(_) = child.query_operation() {
                 true
             } else {
                 false
@@ -218,9 +220,9 @@ where
     /// Swaps the children of a join operation for inner joins or cross products
     fn commute_join(join: &'query mut QueryNode<'query>) -> bool {
         let is_join = match join.query_operation() {
-            Query::CrossProduct => true,
-            Query::InnerJoin(_) => true,
-            Query::NaturalJoin => true,
+            QueryOperation::CrossProduct => true,
+            QueryOperation::InnerJoin(_) => true,
+            QueryOperation::NaturalJoin => true,
             _ => false,
         };
 
@@ -236,10 +238,10 @@ where
     /// Turns a selection followed by a cross product into a inner join, if select.f1=f2(R1xR2) is
     /// equivalent to R1 join.f1=f2 R2. This is true when f1 is a field in either a child of R1 or R1 itself, and f2 is the same for R2
     fn commute_selection_with_join(selection: &'query mut QueryNode<'query>) -> bool {
-        let make_join = if let Query::Selection(condition) = selection.query_operation() {
+        let make_join = if let QueryOperation::Selection(condition) = selection.query_operation() {
             let make_join = {
                 let children = selection.children();
-                if let Query::CrossProduct = children[0].query_operation() {
+                if let QueryOperation::CrossProduct = children[0].query_operation() {
                     if condition.not_conjunction() {
                         let relevant_fields = Vec::from_iter(condition.relevant_fields());
                         let first_node = selection.find_node_with_field(&relevant_fields[0]);
@@ -300,8 +302,8 @@ where
     /// If the projection doesn't contain the fields, instead new projections are made that contain
     /// the projection and the fields used for the join. The original projection is kept.
     fn split_projections_over_join(projection: &'query mut QueryNode<'query>) -> bool {
-        if let Query::Projection(projections) = projection.query_operation() {
-            if let Query::InnerJoin(join_condition) = projection.children()[0].query_operation() {
+        if let QueryOperation::Projection(projections) = projection.query_operation() {
+            if let QueryOperation::InnerJoin(join_condition) = projection.children()[0].query_operation() {
                 let projections = projections.to_owned();
                 let join_condition = join_condition.to_owned();
 
@@ -360,6 +362,52 @@ where
             }
         }
         false
+    }
+
+    fn push_selection_through_join(selection: &'query mut QueryNode<'query>) -> bool {
+        enum Child { Left, Right}
+
+        let (push, side): (bool, Option<Child>) = if let QueryOperation::Selection(condition) = selection.query_operation() {
+            let child = selection.children()[0];
+            if child.is_join() {
+                let child_children = child.children();
+                let left = child_children[0];
+                let right = child_children[1];
+
+                let fields = condition.relevant_fields();
+                let mut relevant_nodes = vec![];
+                for field in fields {
+                    if let Some(node) = child.find_node_with_field(field) {
+                        relevant_nodes.push(node);
+                    } else {
+                        return false; // node not in this tree
+                    }
+                }
+                let mut side = None;
+                let mut push = false;
+
+                for relevant_node in relevant_nodes {
+                    let direction: Option<Child> = {
+                        let mut dir = None;
+                        if left.is_parent_or_self(relevant_node) {
+                            dir = Some(left);
+                        }
+
+                        if right.is_parent_or_self(relevant_node)
+
+                    };
+                    if side.is_none() {
+
+                    }
+                }
+
+                ()
+            } else {
+                (false, None)
+            }
+        } else {
+            (false, None)
+        }
     }
 }
 
