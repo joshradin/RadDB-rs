@@ -501,7 +501,7 @@ impl<'a> QueryNode<'a> {
     /// relations, this node is the lowest node.
     pub fn find_relations<Iter, Id>(&self, relations: Iter) -> Option<&QueryNode<'a>>
     where
-        Id: Into<Identifier> + ToOwned<Owned = Id>,
+        Id: Into<Identifier>,
         Iter: IntoIterator<Item = Id>,
     {
         let ids: HashSet<Identifier> = relations.into_iter().map(|id| id.into()).collect();
@@ -570,10 +570,7 @@ impl<'a> QueryNode<'a> {
 
     /// Finds a node with a field. If multiple relations within the query have the same field, but aren't
     /// part of the same relation
-    pub fn find_node_with_field<I: Into<Identifier> + ToOwned<Owned = I>>(
-        &self,
-        field: I,
-    ) -> Option<&QueryNode<'a>> {
+    pub fn find_node_with_field<I: Into<Identifier>>(&self, field: I) -> Option<&QueryNode<'a>> {
         let id = field.into();
         if let QueryOperation::Source(source) = &self.query {
             if source.source.contains_field(&id) {
@@ -675,6 +672,19 @@ impl<'a> QueryNode<'a> {
             QueryOperation::NaturalJoin => true,
             _ => false,
         }
+    }
+
+    /// Tests if this node has access to all of the fields in the iterator
+    pub fn contains_all_fields<Id: Into<Identifier>, Iter>(&self, iterator: Iter) -> bool
+    where
+        Iter: IntoIterator<Item = Id>,
+    {
+        let mut iterator = iterator.into_iter().map(|i| i.into());
+        self.contains_all_fields_helper(&mut iterator)
+    }
+
+    fn contains_all_fields_helper(&self, iter: &mut dyn Iterator<Item = Identifier>) -> bool {
+        self.find_relations(iter).is_some()
     }
 }
 
