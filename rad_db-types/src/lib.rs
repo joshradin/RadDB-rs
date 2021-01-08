@@ -3,9 +3,11 @@
 
 use chrono::{Date, DateTime, Local, Utc};
 use std::cmp::min;
+use std::convert::{TryFrom, TryInto};
+use std::ffi::CString;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
-use std::convert::TryFrom;
+use std::num::NonZeroU8;
 
 pub mod deserialization;
 pub mod serialization;
@@ -372,17 +374,132 @@ impl Into<u64> for Unsigned {
     }
 }
 
+impl Into<i64> for Signed {
+    fn into(self) -> i64 {
+        match self {
+            Signed::Byte(b) => b as i64,
+            Signed::Short(s) => s as i64,
+            Signed::Int(i) => i as i64,
+            Signed::Long(u) => u,
+        }
+    }
+}
+
+impl TryInto<f64> for Numeric {
+    type Error = Numeric;
+
+    fn try_into(self) -> Result<f64, Self::Error> {
+        match self {
+            Numeric::Float(f) => Ok(f as f64),
+            Numeric::Double(d) => Ok(d),
+            s => Err(s),
+        }
+    }
+}
+
+impl TryInto<String> for Text {
+    type Error = Text;
+
+    fn try_into(self) -> Result<String, Self::Error> {
+        match self {
+            Text::String(s, _) => Ok(s),
+            s => Err(s),
+        }
+    }
+}
+
+impl TryInto<char> for Text {
+    type Error = Text;
+
+    fn try_into(self) -> Result<char, Self::Error> {
+        match self {
+            Text::Char(c) => Ok(c),
+            s => Err(s),
+        }
+    }
+}
+
+impl TryInto<u8> for Text {
+    type Error = Text;
+
+    fn try_into(self) -> Result<u8, Self::Error> {
+        match self {
+            Text::Binary(c) => Ok(c),
+            s => Err(s),
+        }
+    }
+}
+
+impl TryInto<CString> for Text {
+    type Error = Text;
+
+    fn try_into(self) -> Result<CString, Self::Error> {
+        match self {
+            Text::Blob(b) => {
+                let vec: Vec<_> = b.iter().map(|b| NonZeroU8::new(*b)).collect();
+
+                if !vec.iter().all(|b| b.is_some()) {
+                    Err(Text::Blob(b))
+                } else {
+                    let vec: Vec<_> = vec.into_iter().map(|opt| opt.unwrap()).collect();
+                    Ok(CString::from(vec))
+                }
+            }
+            Text::BinaryString(string, ..) => {
+                let vec: Vec<_> = string.iter().map(|b| NonZeroU8::new(*b)).collect();
+
+                if !vec.iter().all(|b| b.is_some()) {
+                    Err(Text::Blob(string))
+                } else {
+                    let vec: Vec<_> = vec.into_iter().map(|opt| opt.unwrap()).collect();
+                    Ok(CString::from(vec))
+                }
+            }
+            s => Err(s),
+        }
+    }
+}
+
 impl TryFrom<Value> for u64 {
     type Error = Value;
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
-            Value::Numeric(
-                Numeric::Unsigned(
-                    Unsigned::Long(u)
-                )
-            ) => Ok(u),
-            v => Err(v)
+            Value::Numeric(Numeric::Unsigned(unsigned)) => Ok(unsigned.into()),
+            v => Err(v),
+        }
+    }
+}
+
+impl TryFrom<Value> for i64 {
+    type Error = Value;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Numeric(Numeric::Signed(signed)) => Ok(signed.into()),
+            v => Err(v),
+        }
+    }
+}
+
+impl TryFrom<Value> for f64 {
+    type Error = Value;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Numeric(num) => num.try_into().map_err(Value::Numeric),
+            v => Err(v),
+        }
+    }
+}
+
+impl TryFrom<Value> for String {
+    type Error = Value;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Text(text) => text.try_into().map_err(Value::Text),
+            v => Err(v),
         }
     }
 }

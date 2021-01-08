@@ -358,6 +358,9 @@ impl<'a> QueryNode<'a> {
                     }
                 }
             }
+            (QueryOperation::Selection(condition), QueryChildren::One(child)) => {}
+            (QueryOperation::Projection(projection), QueryChildren::One(child)) => {}
+
             _ => panic!("Invalid query"),
         }
 

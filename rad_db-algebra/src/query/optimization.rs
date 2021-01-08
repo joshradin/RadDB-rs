@@ -132,16 +132,14 @@ where
 
     fn push_selects_down(&self) {}
 
-
-
     /// If child is selection, this will flip the conditions
     fn commute_selection(parent: &'query mut QueryNode<'query>) -> bool {
-        let parent_condition = if let QueryOperation::Selection(parent_condition) = parent.query_operation()
-        {
-            parent_condition.clone()
-        } else {
-            return false;
-        };
+        let parent_condition =
+            if let QueryOperation::Selection(parent_condition) = parent.query_operation() {
+                parent_condition.clone()
+            } else {
+                return false;
+            };
         let child_condition = if let Some(QueryOperation::Selection(child_condition)) =
             parent.children().get(0).map(|c| c.query_operation())
         {
@@ -303,7 +301,9 @@ where
     /// the projection and the fields used for the join. The original projection is kept.
     fn split_projections_over_join(projection: &'query mut QueryNode<'query>) -> bool {
         if let QueryOperation::Projection(projections) = projection.query_operation() {
-            if let QueryOperation::InnerJoin(join_condition) = projection.children()[0].query_operation() {
+            if let QueryOperation::InnerJoin(join_condition) =
+                projection.children()[0].query_operation()
+            {
                 let projections = projections.to_owned();
                 let join_condition = join_condition.to_owned();
 
@@ -364,6 +364,7 @@ where
         false
     }
 
+    /*
     fn push_selection_through_join(selection: &'query mut QueryNode<'query>) -> bool {
         enum Child { Left, Right}
 
@@ -409,6 +410,8 @@ where
             (false, None)
         }
     }
+
+     */
 }
 
 #[cfg(test)]

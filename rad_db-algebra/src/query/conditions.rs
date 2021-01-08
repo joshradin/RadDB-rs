@@ -1,8 +1,11 @@
 use crate::query::query_node::QueryNode;
+use crate::wrapped_tuple::WrappedTuple;
 use rad_db_structure::identifier::Identifier;
+use rad_db_structure::tuple::Tuple;
 use rad_db_types::Value;
 use std::cmp::min;
 use std::collections::HashSet;
+use std::convert::TryFrom;
 use std::iter::FromIterator;
 
 #[derive(Debug, Clone)]
@@ -31,6 +34,8 @@ pub enum Operand {
     UnsignedNumber(u64),
     Float(f64),
     String(String),
+    Char(char),
+    Boolean(bool),
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -59,6 +64,10 @@ macro_rules! min_float {
         min_float!($($x),*)
     };
 }
+
+/// This operation was invalid for some reason
+#[derive(Debug)]
+pub struct InvalidOperation;
 
 impl ConditionOperation {
     fn selectivity(&self, max_tuples: usize) -> f64 {
@@ -96,6 +105,34 @@ impl ConditionOperation {
                 relevant
             }
             _ => HashSet::new(),
+        }
+    }
+
+    fn evaluate_on(&self, compare: Value, tuple: &WrappedTuple) -> Result<bool, InvalidOperation> {
+        match self {
+            ConditionOperation::Equals(eq) => match eq {
+                Operand::Id(id) => {
+                    let right = &tuple[id];
+                    Ok(&compare == right)
+                }
+                Operand::SignedNumber(signed) => {
+                    let number = i64::try_from(compare).map_err(|_| InvalidOperation)?;
+                    Ok(*signed == number)
+                }
+                Operand::UnsignedNumber(unsigned) => {
+                    let number = u64::try_from(compare).map_err(|_| InvalidOperation)?;
+                    Ok(*unsigned == number)
+                }
+                Operand::Float(f) => {
+                    let number = f64::try_from(compare).map_err(|_| InvalidOperation)?;
+                    Ok(*f == number)
+                }
+                Operand::String(_) => {}
+                Operand::Boolean(_) => {}
+            },
+            ConditionOperation::Nequals(neq) => {}
+            ConditionOperation::And(_, _) => {}
+            ConditionOperation::Or(_, _) => {}
         }
     }
 }
@@ -160,6 +197,18 @@ impl Condition {
             ConditionOperation::And(..) | ConditionOperation::Or(..) => false,
             _ => true,
         }
+    }
+
+    pub fn evaluate_on(&self, tuple: WrappedTuple) -> bool {
+        let left_value = &tuple[&self.base];
+        let right_value: Operand = {
+            match &self.operation {
+                ConditionOperation::Equals(eq) => eq.clone(),
+                ConditionOperation::Nequals(neq) => neq.clone(),
+                ConditionOperation::And(l, r) => {}
+                ConditionOperation::Or(_, _) => {}
+            }
+        };
     }
 }
 
