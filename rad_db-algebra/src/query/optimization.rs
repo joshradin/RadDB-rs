@@ -366,7 +366,10 @@ where
 
     /*
     fn push_selection_through_join(selection: &'query mut QueryNode<'query>) -> bool {
+        unimplemented!()
+        /*
         enum Child { Left, Right}
+
 
         let (push, side): (bool, Option<Child>) = if let QueryOperation::Selection(condition) = selection.query_operation() {
             let child = selection.children()[0];
@@ -388,18 +391,7 @@ where
                 let mut push = false;
 
                 for relevant_node in relevant_nodes {
-                    let direction: Option<Child> = {
-                        let mut dir = None;
-                        if left.is_parent_or_self(relevant_node) {
-                            dir = Some(left);
-                        }
 
-                        if right.is_parent_or_self(relevant_node)
-
-                    };
-                    if side.is_none() {
-
-                    }
                 }
 
                 ()
@@ -409,6 +401,8 @@ where
         } else {
             (false, None)
         }
+
+         */
     }
 
      */

@@ -180,7 +180,7 @@ impl From<&Identifier> for PathBuf {
     }
 }
 
-impl<I : Into<Identifier> + ToOwned<Owned=I>> From<&I> for Identifier {
+impl<I: Into<Identifier> + ToOwned<Owned = I>> From<&I> for Identifier {
     fn from(id: &I) -> Self {
         id.to_owned().into()
     }
@@ -231,5 +231,42 @@ mod tests {
             Identifier::from_iter(&["table", "field"]),
         );
         assert_eq!(concat, Identifier::from_iter(&["db", "table", "field"]));
+    }
+
+    #[test]
+    fn id_transformations() {
+        let string_base = String::from("id");
+        let compare = Identifier::new(string_base.clone());
+
+        let from_string = Identifier::from(string_base.clone());
+        assert_eq!(from_string, compare);
+
+        let from_str = Identifier::from(&*string_base);
+        assert_eq!(from_str, compare);
+
+        let from_ident = Identifier::from(compare.clone());
+        assert_eq!(from_ident, compare);
+
+        let from_string_ref = Identifier::from(&string_base);
+        assert_eq!(from_string_ref, compare);
+
+        let from_str_ref = Identifier::from(&&*string_base);
+        assert_eq!(from_str_ref, compare);
+
+        let from_ident_ref = Identifier::from(&compare);
+        assert_eq!(from_ident_ref, compare);
+
+        let from_ident_ref_ref = Identifier::from(&&compare);
+        assert_eq!(from_ident_ref_ref, compare);
+
+        fn accept<I: Into<Identifier>>(accept: I) -> Identifier {
+            accept.into()
+        }
+
+        accept(&"id");
+        accept("id");
+        accept(&&&"id");
+        accept(compare.clone());
+        accept(&&compare);
     }
 }
